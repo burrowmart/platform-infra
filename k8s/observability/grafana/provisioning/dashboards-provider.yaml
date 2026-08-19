@@ -1,0 +1,18 @@
+# Environment-agnostic (no hostnames) — shared verbatim between the k8s
+# ConfigMap and the Compose observability profile. Points at a mounted
+# folder containing ../dashboards/*.json; Grafana reloads on change every
+# updateIntervalSeconds, so dashboards-as-code updates land without a
+# Grafana restart.
+apiVersion: 1
+
+providers:
+  - name: archtenet
+    orgId: 1
+    folder: "Archtenet"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards-data
+      foldersFromFilesStructure: false

@@ -1,0 +1,56 @@
+# Example values showing how a concrete service overrides the base chart.
+# Copy to your service's helm/values.yaml and adjust.
+
+image:
+  repository: ghcr.io/myorg/example-service
+  tag: sha-abc1234def5678901234567890123456789012345678  # set by CI (git SHA)
+  pullPolicy: IfNotPresent
+
+replicaCount: 2
+
+app:
+  port: 3000
+  env:
+    NODE_ENV: production
+    LOG_LEVEL: info
+    RABBITMQ_QUEUE: example-service.queue
+
+resources:
+  requests:
+    cpu: 150m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+envoy:
+  image: "envoyproxy/envoy:v1.29-latest"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+service:
+  port: 80
+
+ingress:
+  host: example-service.internal.archtenet.com
+  path: /api/v1/example
+  pathType: Prefix
+
+opaAddress: "opa-pdp.opa-system.svc.cluster.local:9191"
+
+secretsManagerPath: "/prod/example-service"
+
+irsaRoleArn: "arn:aws:iam::111122223333:role/example-service-irsa"
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  minAvailable: 1

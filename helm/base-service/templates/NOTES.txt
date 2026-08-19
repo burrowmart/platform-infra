@@ -1,0 +1,11 @@
+Release {{ .Release.Name }} deployed to namespace {{ .Release.Namespace }}.
+
+  Service    : {{ include "base-service.fullname" . }}
+  Internal   : http://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+  OPA PDP    : {{ .Values.opaAddress }}
+
+Traffic path:
+  Cloudflare Edge → Tunnel (cloudflared) → nginx-internal Ingress
+    → ClusterIP Service (:{{ .Values.service.port }})
+    → envoy-pep sidecar (:8080)  [ext_authz → OPA]
+    → app container (:{{ .Values.app.port }})

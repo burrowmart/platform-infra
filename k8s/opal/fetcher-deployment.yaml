@@ -1,0 +1,42 @@
+# Runs opa-policies/opal/fetcher — the RabbitMQ -> OPAL server bridge.
+# image is built+loaded into kind by the demo script; in prod this would be
+# built by a CI workflow in opa-policies (mirroring service-ci.yml's docker
+# job) and pushed to ghcr.io like every other service image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opal-fetcher
+  namespace: opa-system
+  labels:
+    app: opal-fetcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opal-fetcher
+  template:
+    metadata:
+      labels:
+        app: opal-fetcher
+    spec:
+      containers:
+        - name: opal-fetcher
+          image: archtenet/opal-fetcher:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq.data.svc.cluster.local:5672"
+            - name: OPAL_SERVER_URL
+              value: "http://opal-server.opa-system.svc.cluster.local:7002"
+            - name: OPAL_AUTH_MASTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: opal-server-secrets
+                  key: master-token
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

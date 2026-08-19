@@ -1,0 +1,106 @@
+# ---------------------------------------------------------------------------
+# Image for the application container
+# ---------------------------------------------------------------------------
+image:
+  repository: ghcr.io/org/example-service
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Desired pod count; HPA overrides this at runtime
+replicaCount: 2
+
+# ---------------------------------------------------------------------------
+# Application container
+# ---------------------------------------------------------------------------
+app:
+  port: 3000
+  # Key/value pairs injected as container env vars (on top of secrets from ExternalSecret)
+  env: {}
+
+# Resource requests/limits for the app container
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Envoy PEP sidecar
+# Envoy listens on :8080, calls OPA PDP over gRPC (ext_authz), then forwards
+# allowed requests to 127.0.0.1:app.port. Pin to a digest in production.
+# ---------------------------------------------------------------------------
+envoy:
+  image: "envoyproxy/envoy:v1.29-latest"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  # Opt-in only — ws-gateway is the sole consumer. Passes the WebSocket
+  # Upgrade handshake through the sidecar instead of Envoy stripping it.
+  websocketUpgrade: false
+  # Route timeout in seconds. Use a large number (e.g. 3600) for long-lived
+  # WebSocket connections, never 0 — Sprig's `default` treats 0 as empty.
+  routeTimeoutSeconds: 30
+
+# ---------------------------------------------------------------------------
+# ClusterIP Service
+# LoadBalancer/NodePort intentionally excluded; Cloudflare Tunnel is the sole
+# external entry point and requires ClusterIP targets.
+# ---------------------------------------------------------------------------
+service:
+  port: 80
+
+# ---------------------------------------------------------------------------
+# Internal nginx Ingress
+# Cloudflare Tunnel forwards here; TLS is terminated at the Cloudflare edge,
+# so no TLS stanza is needed on this Ingress.
+# ---------------------------------------------------------------------------
+ingress:
+  host: example-service.internal.example.com
+  path: /
+  pathType: Prefix
+  # Merged over the chart's hardcoded defaults (proxy-read-timeout etc.) — a
+  # key set here wins. Empty by default; ws-gateway uses this to raise
+  # proxy-read/send-timeout and disable buffering for WebSocket connections.
+  annotations: {}
+
+# ---------------------------------------------------------------------------
+# OPA PDP address for Envoy ext_authz (gRPC).
+# Default points to the OPA DaemonSet via its ClusterIP service.
+# For strict node-local traffic, run an init-container that writes
+# "$(NODE_IP):9191" (downward API) into the Envoy config file.
+# ---------------------------------------------------------------------------
+opaAddress: "opa-pdp.opa-system.svc.cluster.local:9191"
+
+# ---------------------------------------------------------------------------
+# Secrets & Identity
+# ---------------------------------------------------------------------------
+
+# AWS Secrets Manager JSON path; External Secrets Operator syncs all keys into a k8s Secret
+secretsManagerPath: "/prod/example-service"
+
+# EKS IRSA role ARN annotated on the ServiceAccount — grants the pod AWS API access
+irsaRoleArn: "arn:aws:iam::123456789012:role/example-service-irsa"
+
+# ---------------------------------------------------------------------------
+# Autoscaling
+# ---------------------------------------------------------------------------
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# Ensures at least one pod survives a voluntary disruption (node drain, rollout)
+podDisruptionBudget:
+  minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# Name overrides (Helm standard)
+# ---------------------------------------------------------------------------
+nameOverride: ""
+fullnameOverride: ""

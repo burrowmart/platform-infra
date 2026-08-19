@@ -1,0 +1,56 @@
+# Compose-local counterpart to ../k8s/observability/vector/vector.yaml — same
+# downstream transform/label logic, different source: no Kubernetes API to
+# ask for pod metadata here, so this uses Vector's docker_logs source
+# instead, which talks to the Docker Engine API over the socket (works
+# identically on Linux and Docker Desktop's macOS/Windows VM, unlike
+# bind-mounting /var/lib/docker/containers). See
+# ../k8s/observability/README.md's "Why Vector, not Fluent Bit" section —
+# this dual-source portability is the whole reason Vector was chosen.
+data_dir: /var/lib/vector
+
+sources:
+  docker_logs:
+    type: docker_logs
+    docker_host: "unix:///var/run/docker.sock"
+    # Only the saga participants docker-compose.test.yml adds — excludes
+    # mongo/redis/rabbitmq/loki/tempo/grafana/prometheus/otel-collector/
+    # vector itself, none of which emit the pino JSON shape parsed below.
+    include_containers:
+      - "order-service-it"
+      - "catalog-service-it"
+      - "payment-service-it"
+
+transforms:
+  parse_json:
+    type: remap
+    inputs: ["docker_logs"]
+    source: |-
+      parsed, err = parse_json(string!(.message))
+      if err == null {
+        . = merge(., object!(parsed))
+      }
+
+      # No Kubernetes pod labels to read here — docker_logs already attaches
+      # the container name as `.container_name`. Strip the "-it" suffix
+      # docker-compose.test.yml's container_name adds so `service` matches
+      # the k8s variant's value ("order-service", not "order-service-it"),
+      # keeping LogQL queries identical between environments (see
+      # ../docs/find-by-rayid.md).
+      .service = replace(string!(.container_name), "-it", "")
+      # Fixed value — Compose has no namespace concept. find-by-rayid.md's
+      # Loki query uses this exact value when run against this stack.
+      .k8s_namespace = "compose-local"
+
+sinks:
+  loki:
+    type: loki
+    inputs: ["parse_json"]
+    endpoint: "http://loki:3100"
+    encoding:
+      codec: json
+    labels:
+      service: "{{ service }}"
+      namespace: "{{ k8s_namespace }}"
+    out_of_order_action: accept
+    healthcheck:
+      enabled: false

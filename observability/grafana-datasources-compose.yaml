@@ -1,0 +1,25 @@
+# Compose-local counterpart to
+# ../k8s/observability/grafana/provisioning/datasources.yaml — same 3
+# datasources, Compose service-name hostnames instead of in-cluster DNS.
+# See that file's comment for why there's no Loki<->Tempo derived-field link.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200

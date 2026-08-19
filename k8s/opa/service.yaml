@@ -1,0 +1,24 @@
+# Matches the address every service's Envoy sidecar already points at
+# (opaAddress in platform-infra/helm/base-service/values.yaml and every
+# service's helm/values.yaml): opa-pdp.opa-system.svc.cluster.local:9191.
+# A plain ClusterIP Service load-balances across every DaemonSet pod
+# cluster-wide — fine for this deployment size; node-local-only routing
+# would need internalTrafficPolicy: Local plus a Downward-API HOST_IP dance
+# (see opa-policies/envoy/ext-authz.yaml's comment on that alternative).
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa-pdp
+  namespace: opa-system
+  labels:
+    app: opa-pdp
+spec:
+  selector:
+    app: opa-pdp
+  ports:
+    - name: ext-authz-grpc
+      port: 9191
+      targetPort: 9191
+    - name: rest-api
+      port: 8181
+      targetPort: 8181

@@ -1,0 +1,91 @@
+# Vector config for the in-cluster log-collection DaemonSet.
+#
+# Why Vector over Fluent Bit (both were viable — this is the tie-breaker):
+#   1. One tool, two environments. Vector's `kubernetes_logs` source (used
+#      here) and its `docker_logs` source (used by the Compose variant,
+#      ../../../observability/vector-compose.yaml) are both first-class,
+#      well-maintained sources in the same binary. Fluent Bit's canonical
+#      local-dev story is tailing the docker json-log files directly, which
+#      is brittle on Docker Desktop (macOS/Windows run Docker in a VM, so
+#      /var/lib/docker/containers isn't a host path you can bind-mount) —
+#      Vector's docker_logs source instead talks to the Docker Engine API
+#      over the socket, which works identically everywhere Docker runs.
+#   2. VRL (below, in the `parse_json` transform) is a real typed expression
+#      language with mandatory error handling (`parse_json(.message)` forces
+#      you to handle the error path) — easier to review and test than
+#      Fluent Bit's Lua filters for the one thing we need precise control
+#      over: promoting exactly two fields to Loki labels and nothing else.
+#   3. Single static binary, no Lua/langauge runtime to patch, low RSS —
+#      fits a DaemonSet running on every node of a small demo cluster.
+#
+# Deployed via: kubectl create configmap vector-config -n observability
+#   --from-file=vector.yaml=./vector.yaml --dry-run=client -o yaml | kubectl apply -f -
+# (see ../README.md — kept out of a static ConfigMap manifest so this file
+# is the single source of truth, not duplicated into YAML-in-YAML).
+
+data_dir: /var/lib/vector
+
+sources:
+  k8s_logs:
+    type: kubernetes_logs
+    # Every base-service pod's app container writes pino JSON to stdout —
+    # the container runtime writes that to /var/log/containers/*.log
+    # (symlinked to /var/lib/docker/containers/**), which this source tails.
+    # Vector auto-enriches each event with kubernetes.pod_name,
+    # kubernetes.pod_namespace, kubernetes.pod_labels, kubernetes.container_name
+    # by watching the Kubernetes API — this is how `service`/`namespace`
+    # below are derived, without any code in the app needing to know it.
+
+transforms:
+  parse_json:
+    type: remap
+    inputs: ["k8s_logs"]
+    source: |-
+      # .message is the raw stdout line (pino's JSON). Parse it and merge its
+      # fields (correlationId, level, msg, req, res, err, ...) onto the event
+      # so they're queryable structured fields in Loki, not just raw text.
+      # On parse failure (a non-JSON line — e.g. a stack trace that bypassed
+      # pino) leave .message as-is; the line still ships, just unstructured.
+      parsed, err = parse_json(string!(.message))
+      if err == null {
+        . = merge(., object!(parsed))
+      }
+
+      # --- Label strategy -----------------------------------------------
+      # `service` and `namespace` come from Kubernetes pod metadata (the
+      # base-service Helm chart's app.kubernetes.io/name selector label and
+      # the pod's namespace), never from the log body. That keeps the label
+      # set small and finite: one series per (service, namespace) pair,
+      # bounded by how many services + namespaces exist.
+      #
+      # `correlationId` is deliberately NOT promoted to a label here. It is
+      # left as a plain JSON field inside the stored log line and queried
+      # with a LogQL `| json | correlationId="..."` filter instead (see
+      # platform-infra/docs/find-by-rayid.md). Every request mints a new
+      # correlationId, so making it a label would make Loki open one new
+      # index series per HTTP request — exactly the unbounded-cardinality
+      # blowup Loki's own docs call out as the #1 way to fall over an
+      # index. Labels are for things with a small, known set of values;
+      # correlationId has neither.
+      .service = to_string(get!(., ["kubernetes", "pod_labels", "app.kubernetes.io/name"])) ?? "unknown"
+      .k8s_namespace = to_string(.kubernetes.pod_namespace) ?? "unknown"
+
+sinks:
+  loki:
+    type: loki
+    inputs: ["parse_json"]
+    endpoint: "http://loki.observability.svc.cluster.local:3100"
+    encoding:
+      codec: json
+    # Only these two keys become Loki labels — see the label-strategy
+    # comment above. Everything else in the event (including correlationId)
+    # rides along inside the stored line because encoding.codec is "json".
+    labels:
+      service: "{{ service }}"
+      namespace: "{{ k8s_namespace }}"
+    out_of_order_action: accept
+    healthcheck:
+      # Loki may not be Ready yet when a Vector pod starts (DaemonSet vs.
+      # single Loki replica have no ordering guarantee) — don't let a
+      # transient healthcheck failure block the sink from ever starting.
+      enabled: false

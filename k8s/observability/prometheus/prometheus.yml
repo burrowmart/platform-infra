@@ -1,0 +1,53 @@
+# Single job, annotation-based discovery: any pod in any namespace that sets
+# prometheus.io/scrape: "true" gets scraped — the base-service Helm chart
+# sets this on every service pod (see
+# ../../../helm/base-service/templates/deployment.yaml), pointing straight
+# at the app container's port so the scrape bypasses the Envoy PEP sidecar
+# (Prometheus has no OPA-recognized identity; ext_authz would 403 it).
+# The demo RabbitMQ pod (../../../demo/data-namespace.yaml) carries the same
+# annotations against its rabbitmq_prometheus plugin port — see
+# ../rabbitmq-exporter/README.md.
+#
+# k8s-only: relies on the Kubernetes API for service discovery, so this file
+# has no Compose equivalent — ../../../observability/prometheus-compose.yml
+# is a static target list instead (there's no orchestrator API to query in
+# Compose). Kept as an intentionally separate file for that reason.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Opt-in only.
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: "true"
+      # prometheus.io/path (defaults to /metrics via the regex fallback).
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      # prometheus.io/port — rewrite the discovered pod IP:port to it,
+      # since the default target address uses the pod's first declared
+      # containerPort, which for every app pod here is the Envoy sidecar's
+      # 8080, not the app's own metrics port.
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      # --- Label strategy: service + namespace only, deliberately mirroring
+      # the Loki/Vector label strategy (../vector/vector.yaml) so a RED
+      # dashboard panel and a Loki log panel can share one `service`
+      # variable. `pod` is also kept (Prometheus's own convention) for
+      # per-replica debugging, but dashboards should filter/group by
+      # `service`, not `pod`.
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: service
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod

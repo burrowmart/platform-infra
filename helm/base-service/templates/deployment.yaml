@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels:
+    {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "base-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "base-service.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Force pod restart when the Envoy ConfigMap changes
+        checksum/envoy-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # Prometheus annotation-based scrape discovery (see
+        # platform-infra/k8s/observability/prometheus/prometheus.yml). Points
+        # straight at the app container's port, bypassing the Envoy sidecar —
+        # same reasoning as the kubelet probes below: MetricsController is
+        # @Public() and Prometheus has no OPA-recognized identity to present
+        # to ext_authz, so scraping through :8080 would just get denied.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.app.port | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: {{ include "base-service.fullname" . }}
+      # Non-root pod default; containers may tighten further via their own securityContext
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        # ---------------------------------------------------------------
+        # app: the NestJS service. Receives traffic only from envoy-pep
+        # (via 127.0.0.1) after OPA has authorised the request.
+        # ---------------------------------------------------------------
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http-app
+              containerPort: {{ .Values.app.port }}
+              protocol: TCP
+          env:
+            {{- range $key, $val := .Values.app.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          # All secrets from AWS Secrets Manager (synced by ESO) injected as env vars
+          envFrom:
+            - secretRef:
+                name: {{ include "base-service.fullname" . }}
+                optional: true  # avoids init-crash if ESO hasn't synced yet on first deploy
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          # Kubelet probes bypass Envoy and hit the app port directly
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.app.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.app.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+        # ---------------------------------------------------------------
+        # envoy-pep: Policy Enforcement Point sidecar.
+        # Listens on :8080; calls OPA PDP over gRPC; forwards allowed
+        # requests to 127.0.0.1:{{ .Values.app.port }}.
+        # The Kubernetes Service routes to port 8080 (this container),
+        # never directly to the app container.
+        # ---------------------------------------------------------------
+        - name: envoy-pep
+          image: {{ .Values.envoy.image | quote }}
+          args:
+            - -c
+            - /etc/envoy/envoy.yaml
+            - --service-cluster
+            - {{ include "base-service.fullname" . }}
+          ports:
+            - name: http-envoy
+              containerPort: 8080
+              protocol: TCP
+            - name: envoy-admin
+              containerPort: 9901
+              protocol: TCP
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+              readOnly: true
+          resources:
+            {{- toYaml .Values.envoy.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: {{ include "base-service.fullname" . }}-envoy

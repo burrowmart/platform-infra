@@ -1,0 +1,52 @@
+# Template, not applied directly — the demo script (../../../demo/run-demo.sh)
+# envsubst's ${OPA_BUNDLE_S3_URL} into it before `kubectl apply`. In prod,
+# your deploy pipeline does the same substitution (OPA_BUNDLE_S3_URL =
+# https://<bucket>.s3.<region>.amazonaws.com from terraform's
+# opa_bundle_bucket_name output; AWS creds come from the IRSA role annotated
+# on serviceaccount.yaml, via s3_signing.environment_credentials, same as the
+# demo — only the URL and where the credentials originate differ).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-config
+  namespace: opa-system
+data:
+  config.yaml: |
+    services:
+      s3:
+        url: ${OPA_BUNDLE_S3_URL}
+        credentials:
+          s3_signing:
+            environment_credentials: {}
+
+    bundles:
+      authz:
+        service: s3
+        resource: bundle.tar.gz
+        # No persist: true — that writes the bundle to local disk so a
+        # restarting pod has something to serve before its first successful
+        # poll, which needs a writable volume mounted at OPA's persistence
+        # dir. Skipping it means a pod briefly 403s everything until its
+        # first poll completes instead — an acceptable tradeoff against the
+        # extra volume, given the S3 bucket isn't expected to be unreachable.
+        polling:
+          min_delay_seconds: 5
+          max_delay_seconds: 10
+
+    # Every decision printed to stdout — fine for a demo/small deployment;
+    # ship to a remote sink (decision_logs.service) at real traffic volume.
+    decision_logs:
+      console: true
+
+    # console: true here would also dump a full Prometheus snapshot on every
+    # status tick — decision_logs.console above is the useful signal for this
+    # demo, so status reporting stays off.
+    status:
+      console: false
+
+    plugins:
+      envoy_ext_authz_grpc:
+        addr: :9191
+        # Matches package envoy.authz / rule allow in bundle/envoy.rego.
+        query: data.envoy.authz.allow
+        dry-run: false

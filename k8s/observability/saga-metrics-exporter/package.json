@@ -1,0 +1,14 @@
+{
+  "name": "@demo/saga-metrics-exporter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Exposes saga_log terminal-state counts (order-service's Mongo collection) as a Prometheus gauge — see README.md for why this is a separate exporter rather than app-level instrumentation.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "mongodb": "^6.20.0",
+    "prom-client": "^15.1.0"
+  }
+}

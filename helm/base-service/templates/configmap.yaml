@@ -1,0 +1,124 @@
+{{/*
+Envoy static bootstrap config is rendered at deploy time so that opaAddress and
+app.port are baked into the ConfigMap. For node-local OPA DaemonSet access,
+override opaAddress with an init-container that substitutes $(NODE_IP):9191.
+*/}}
+{{- $opaParts := splitList ":" .Values.opaAddress -}}
+{{- $opaHost := index $opaParts 0 -}}
+{{- $opaPort := default "9191" (index $opaParts 1) | int -}}
+{{/*
+WebSocket support is opt-in (envoy.websocketUpgrade: true) — every existing
+service leaves this unset and gets byte-for-byte the same rendered config as
+before. When enabled: (1) the HCM gets an "websocket" upgrade_type so Envoy
+passes the Upgrade/Connection handshake through instead of stripping it, and
+(2) the app route's timeout is overridable via envoy.routeTimeoutSeconds,
+since Envoy's route.timeout bounds the whole stream duration and a hardcoded
+30s would kill any WS connection older than 30s even after a clean upgrade.
+Set routeTimeoutSeconds to a large value (e.g. 3600), not 0 — Sprig's
+`default` treats 0 as empty and would silently fall back to 30 here.
+*/}}
+{{- $wsUpgrade := .Values.envoy.websocketUpgrade | default false -}}
+{{- $routeTimeout := .Values.envoy.routeTimeoutSeconds | default 30 -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "base-service.fullname" . }}-envoy
+  labels:
+    {{- include "base-service.labels" . | nindent 4 }}
+data:
+  envoy.yaml: |
+    # Admin bound to loopback only so it is never reachable from the network
+    admin:
+      address:
+        socket_address:
+          address: 127.0.0.1
+          port_value: 9901
+
+    static_resources:
+      listeners:
+      - name: ingress
+        address:
+          socket_address:
+            address: 0.0.0.0
+            port_value: 8080
+        filter_chains:
+        - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              stat_prefix: ingress_http
+              access_log:
+              - name: envoy.access_loggers.stdout
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              http_filters:
+              # ext_authz calls OPA PDP before forwarding; failure_mode_allow: false = deny on OPA error (secure default)
+              - name: envoy.filters.http.ext_authz
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                  grpc_service:
+                    envoy_grpc:
+                      cluster_name: opa_pdp
+                    timeout: 0.5s
+                  transport_api_version: V3
+                  failure_mode_allow: false
+              - name: envoy.filters.http.router
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              {{- if $wsUpgrade }}
+              # Without this, Envoy's HTTP Connection Manager strips the Upgrade header
+              # and a WebSocket handshake through this sidecar fails as a plain HTTP request.
+              upgrade_configs:
+              - upgrade_type: websocket
+              {{- end }}
+              route_config:
+                name: local_route
+                virtual_hosts:
+                - name: app
+                  domains: ["*"]
+                  routes:
+                  - match:
+                      prefix: "/"
+                    route:
+                      cluster: app_service
+                      timeout: {{ $routeTimeout }}s
+                      {{- if $wsUpgrade }}
+                      # Per-route opt-in mirrors the HCM-level upgrade_configs above.
+                      upgrade_configs:
+                      - upgrade_type: websocket
+                      {{- end }}
+
+      clusters:
+      # STATIC + 127.0.0.1 because the app container is always co-located in the same pod
+      - name: app_service
+        connect_timeout: 0.25s
+        type: STATIC
+        load_assignment:
+          cluster_name: app_service
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 127.0.0.1
+                    port_value: {{ .Values.app.port }}
+
+      # STRICT_DNS resolves the OPA service DNS name on every reconnect
+      - name: opa_pdp
+        connect_timeout: 0.25s
+        type: STRICT_DNS
+        # gRPC requires HTTP/2; explicit_http_config forces it instead of ALPN negotiation
+        typed_extension_protocol_options:
+          envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+            "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+            explicit_http_config:
+              http2_protocol_options: {}
+        load_assignment:
+          cluster_name: opa_pdp
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: {{ $opaHost }}
+                    port_value: {{ $opaPort }}

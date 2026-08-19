@@ -1,0 +1,36 @@
+# Copy to terraform.tfvars (gitignored) and fill in. Never commit real
+# account IDs, zone IDs, or tokens in this file — cloudflare_api_token in
+# particular should come from TF_VAR_cloudflare_api_token or a secrets
+# manager, not a checked-in tfvars file.
+
+aws_region     = "eu-west-1"
+aws_account_id = "111122223333"
+
+eks_cluster_name = "archtenet-prod"
+
+cloudflare_account_id = "0123456789abcdef0123456789abcdef"
+cloudflare_zone_id    = "0123456789abcdef0123456789abcdef"
+# cloudflare_api_token — leave unset here; export TF_VAR_cloudflare_api_token instead.
+
+base_domain = "internal.archtenet.com"
+tunnel_name = "archtenet-internal"
+
+github_owner = "archtenet"
+# github_repo_patterns defaults to ["archtenet/*"] on refs/heads/main if left unset.
+
+opa_bundle_bucket_name = "archtenet-opa-bundles-111122223333"
+
+tags = {
+  Project     = "archtenet"
+  ManagedBy   = "terraform"
+  Environment = "prod"
+}
+
+# secret_values — leave out of any committed file. Populate via a gitignored
+# secrets.auto.tfvars or TF_VAR_secret_values, e.g.:
+#
+# secret_values = {
+#   user-service = {
+#     mongo-uri = "mongodb+srv://..."
+#   }
+# }

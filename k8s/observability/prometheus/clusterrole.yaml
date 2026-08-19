@@ -1,0 +1,11 @@
+# Read-only. Only "pods" is needed: prometheus.yml uses a single
+# `role: pod` kubernetes_sd_config, cluster-wide (every namespace a service
+# might land in).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]

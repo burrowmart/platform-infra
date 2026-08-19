@@ -1,0 +1,15 @@
+apiVersion: v2
+name: base-service
+description: >
+  Parent Helm chart shared by every archtenet microservice.
+  Service charts declare this as a 'file://' dependency for local dev and
+  override only what differs (image, env, secrets path, IRSA role).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - archtenet
+  - microservice
+  - base-chart
+maintainers:
+  - name: platform-team

@@ -1,0 +1,175 @@
+# Optional local observability stack — Loki, Tempo, Grafana, OTel Collector,
+# Prometheus, Vector, and a rabbitmq_prometheus-enabled RabbitMQ. Mirrors
+# platform-infra/k8s/observability/ (same config files where the config
+# itself is environment-agnostic — see each file's header comment for
+# which ones those are).
+#
+# Usage — layer on top of the base stack + the saga IT services, same
+# pattern docker-compose.test.yml already established:
+#
+#   docker compose \
+#     -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.observability.yml \
+#     --profile observability up -d --build
+#
+#   docker compose \
+#     -f docker-compose.yml -f docker-compose.test.yml -f docker-compose.observability.yml \
+#     --profile observability down -v
+#
+# Every service below carries `profiles: ["observability"]` so plain
+# `docker compose up` (no --profile flag) never starts any of them — this
+# file is inert unless explicitly opted into. The `rabbitmq` and
+# order/catalog/payment-service overrides just below are the one exception:
+# those patch services docker-compose.yml/docker-compose.test.yml already
+# start unconditionally, so — as with docker-compose.test.yml — the
+# opt-in mechanism is simply "don't pass -f docker-compose.observability.yml
+# at all" if you don't want them.
+
+services:
+
+  # ── RabbitMQ — enable the built-in Prometheus plugin ───────────────────
+  # See platform-infra/k8s/observability/rabbitmq-exporter/README.md for
+  # why this is RabbitMQ's own rabbitmq_prometheus plugin rather than a
+  # separate exporter container.
+  rabbitmq:
+    ports:
+      - "15692:15692"
+    volumes:
+      - ./observability/rabbitmq-enabled-plugins:/etc/rabbitmq/enabled_plugins:ro
+      # Per-object metrics opt-in — see the file's header comment (same file
+      # the k8s ConfigMap in ../demo/data-namespace.yaml mounts) for why this
+      # is required for the saga-health dashboard's DLQ-depth-by-queue panel.
+      # Mounted straight to rabbitmq.conf (not conf.d/*.conf) — the plain
+      # community image's entrypoint only guarantees loading that one path;
+      # conf.d auto-inclusion is a RabbitMQ Cluster Operator convention, not
+      # something this base image does on its own.
+      - ./k8s/observability/rabbitmq-exporter/rabbitmq-prometheus-per-object.conf:/etc/rabbitmq/rabbitmq.conf:ro
+
+  # ── Saga participants — point OTLP at the local collector ──────────────
+  # Port 4317 (gRPC) to match the exporter package tracing.ts uses — same
+  # fix applied to every service's helm/values.yaml (see git history on
+  # that file for the reasoning: the grpc exporter package always speaks
+  # gRPC regardless of what port you hand it).
+  order-service:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+  catalog-service:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+  payment-service:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
+
+  # ── Vector — logs → Loki ────────────────────────────────────────────────
+  vector:
+    image: timberio/vector:0.43.0-alpine
+    profiles: ["observability"]
+    command: ["--config", "/etc/vector/vector.yaml"]
+    volumes:
+      - ./observability/vector-compose.yaml:/etc/vector/vector.yaml:ro
+      # Vector's docker_logs source talks to the Docker Engine API over
+      # this socket — see vector-compose.yaml's header comment for why
+      # this (not bind-mounting /var/lib/docker/containers) is the
+      # portable choice across host OSes.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # ── Loki ─────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.8
+    profiles: ["observability"]
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./k8s/observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    restart: unless-stopped
+
+  # ── Tempo ────────────────────────────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.5.0
+    profiles: ["observability"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    ports:
+      - "3200:3200"
+      - "4319:4317" # spare host mapping for direct OTLP-grpc debugging (4317 itself is claimed by otel-collector below)
+    volumes:
+      - ./k8s/observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    restart: unless-stopped
+
+  # ── OTel Collector — OTLP in, OTLP out to Tempo ─────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.102.0
+    profiles: ["observability"]
+    command: ["--config=/etc/otel-collector/config.yaml"]
+    environment:
+      TEMPO_ENDPOINT: "tempo:4317"
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    volumes:
+      - ./k8s/observability/otel-collector/config.yaml:/etc/otel-collector/config.yaml:ro
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  # ── saga-metrics-exporter — saga_log terminal states ────────────────────
+  # See k8s/observability/saga-metrics-exporter/README.md for why this
+  # exists as a standalone exporter.
+  saga-metrics-exporter:
+    build:
+      context: .
+      dockerfile: k8s/observability/saga-metrics-exporter/Dockerfile
+    profiles: ["observability"]
+    ports:
+      - "9308:9308"
+    environment:
+      # Same DB docker-compose.test.yml's order-service writes saga_log to.
+      MONGO_URI: "mongodb://mongo:27017/orders_it?replicaSet=rs0"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Prometheus ───────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: ["observability"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus-compose.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    restart: unless-stopped
+
+  # ── Grafana ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: ["observability"]
+    ports:
+      - "3001:3000" # host 3000 is likely taken by a frontend dev server
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./observability/grafana-datasources-compose.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - ./k8s/observability/grafana/provisioning/dashboards-provider.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml:ro
+      - ./k8s/observability/grafana/dashboards:/etc/grafana/provisioning/dashboards-data:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+      - tempo
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  loki-data:
+  tempo-data:
+  prometheus-data:
+  grafana-data:

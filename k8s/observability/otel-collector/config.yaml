@@ -1,0 +1,56 @@
+# OTLP in, OTLP out to Tempo. Shared verbatim between the k8s ConfigMap and
+# the Compose observability profile — the only thing that differs between
+# environments is where Tempo lives, and that's injected via the
+# TEMPO_ENDPOINT env var (k8s: tempo.observability.svc.cluster.local:4317,
+# compose: tempo:4317 — see each Deployment/service's env block), using the
+# Collector's built-in ${env:VAR} expansion so this file itself never needs
+# to change per environment.
+#
+# Metrics are NOT routed through this Collector: every service already
+# exposes its own Prometheus /metrics endpoint (see ARCHITECTURE.md), and
+# Prometheus scrapes those directly (../prometheus/prometheus.yml) — pushing
+# metrics through the Collector too would just be a second, redundant path
+# for the same data.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Protects the Collector itself from an unbounded queue if Tempo falls
+  # behind or is briefly unreachable — drops/refuses data past the limit
+  # instead of OOMing the pod.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 400
+    spike_limit_mib: 100
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  otlp/tempo:
+    endpoint: ${env:TEMPO_ENDPOINT}
+    tls:
+      # Cluster-internal hop over plaintext gRPC — Tempo has no TLS listener
+      # configured (see ../tempo/tempo.yaml); mirrors every other
+      # cluster-internal hop in this system that isn't already behind the
+      # Envoy PEP sidecar.
+      insecure: true
+  # Cheap way to visually confirm spans are arriving during setup/debugging
+  # (kubectl logs the otel-collector pod) without standing up Tempo first.
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo, debug]
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888

@@ -1,0 +1,36 @@
+{{/*
+.Values.ingress.annotations (default {}) is merged over these defaults —
+via `merge` rather than appending raw lines — so a key like proxy-read-timeout
+can be overridden (e.g. by ws-gateway, for long-lived WebSocket connections)
+without producing a duplicate YAML key. Empty by default: every other
+service's rendered Ingress is byte-for-byte unchanged.
+*/}}
+{{- $defaultAnnotations := dict
+      "nginx.ingress.kubernetes.io/proxy-read-timeout" "60"
+      "nginx.ingress.kubernetes.io/proxy-connect-timeout" "30"
+      "nginx.ingress.kubernetes.io/configuration-snippet" "more_set_input_headers \"x-correlation-id: $http_cf_ray\";\n"
+-}}
+{{- $annotations := merge (.Values.ingress.annotations | default dict) $defaultAnnotations -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels:
+    {{- include "base-service.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $annotations | nindent 4 }}
+spec:
+  # nginx-internal is the cluster-internal nginx ingress class reached only via
+  # the Cloudflare Tunnel (cloudflared namespace). No public inbound exists.
+  ingressClassName: nginx-internal
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: {{ .Values.ingress.path | quote }}
+            pathType: {{ .Values.ingress.pathType }}
+            backend:
+              service:
+                name: {{ include "base-service.fullname" . }}
+                port:
+                  number: {{ .Values.service.port }}

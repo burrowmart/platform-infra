@@ -1,0 +1,131 @@
+# One OPA PDP + one OPAL client per node — the OPAL client is a sidecar here,
+# not a separate Deployment, so each node-local OPA gets data pushes without
+# an extra network hop (see opa-policies/opal/README.md for why: OPAL's own
+# topology is server-fans-out / one-client-per-policy-store).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: opa-pdp
+  namespace: opa-system
+  labels:
+    app: opa-pdp
+spec:
+  selector:
+    matchLabels:
+      app: opa-pdp
+  template:
+    metadata:
+      labels:
+        app: opa-pdp
+    spec:
+      serviceAccountName: opa-pdp
+      containers:
+        # ---------------------------------------------------------------
+        # opa: the PDP. Envoy sidecars on every service pod call :9191
+        # (ext_authz gRPC) via the opa-pdp ClusterIP Service. Polls its
+        # Rego+data bundle from S3 independently of OPAL (OPAL here only
+        # ever pushes to opal-client's local /v1/data, never touches policy).
+        # ---------------------------------------------------------------
+        - name: opa
+          # -envoy-static build: the plain openpolicyagent/opa image doesn't
+          # register the envoy_ext_authz_grpc plugin (confirmed by testing —
+          # it fails fast with "plugin ... not registered"); -static is the
+          # variant with an arm64 build, matching this cluster's node arch.
+          image: openpolicyagent/opa:1.19.0-envoy-static
+          args:
+            - run
+            - --server
+            - --config-file=/config/config.yaml
+            - --addr=0.0.0.0:8181
+            - --log-level=info
+          ports:
+            - name: rest-api
+              containerPort: 8181
+              protocol: TCP
+            - name: ext-authz-grpc
+              containerPort: 9191
+              protocol: TCP
+          env:
+            # s3_signing.environment_credentials reads these. Real EKS: IRSA
+            # injects them via the pod-identity webhook (no Secret needed,
+            # nothing below applies). kind demo: sourced from a Secret holding
+            # MinIO's root credentials, created by the demo script.
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: opa-s3-credentials
+                  key: access-key-id
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: opa-s3-credentials
+                  key: secret-access-key
+                  optional: true
+          volumeMounts:
+            - name: opa-config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health?bundles=true
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+        # ---------------------------------------------------------------
+        # opal-client: subscribes to the OPAL server's pubsub and PUTs
+        # incremental data updates into the co-located opa container over
+        # localhost — never fetches or writes policy (INLINE_OPA_ENABLED
+        # false means it doesn't run its own OPA; POLICY_STORE_URL points
+        # at the sidecar's REST API instead).
+        # ---------------------------------------------------------------
+        - name: opal-client
+          image: permitio/opal-client:latest
+          env:
+            - name: OPAL_SERVER_URL
+              value: "http://opal-server.opa-system.svc.cluster.local:7002"
+            - name: OPAL_INLINE_OPA_ENABLED
+              value: "false"
+            - name: OPAL_POLICY_STORE_URL
+              value: "http://localhost:8181"
+            - name: OPAL_CLIENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: opal-client-secrets
+                  key: client-token
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: opa-config
+          configMap:
+            name: opa-config

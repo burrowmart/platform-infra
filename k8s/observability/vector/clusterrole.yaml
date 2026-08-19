@@ -1,0 +1,12 @@
+# Read-only, cluster-wide: the kubernetes_logs source watches Pods (for
+# pod_labels/pod_namespace enrichment) and Namespaces across every namespace,
+# not just its own — a DaemonSet pod on any node may need to tail a
+# container belonging to a pod in any namespace scheduled to that node.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]

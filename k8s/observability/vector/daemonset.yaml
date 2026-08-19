@@ -1,0 +1,75 @@
+# One Vector pod per node — tails every container's log file on that node
+# from the host filesystem, so log collection scales with the cluster
+# without any per-service sidecar or app-level shipping code.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vector
+  namespace: observability
+  labels:
+    app: vector
+spec:
+  selector:
+    matchLabels:
+      app: vector
+  template:
+    metadata:
+      labels:
+        app: vector
+    spec:
+      serviceAccountName: vector
+      # Run on every node, including any control-plane/master taint — a
+      # log collector that skips tainted nodes has a blind spot.
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: vector
+          image: timberio/vector:0.43.0-alpine
+          args: ["--config", "/etc/vector/vector.yaml"]
+          env:
+            # kubernetes_logs uses this to scope pod-metadata lookups to the
+            # node this Vector instance is actually running on.
+            - name: VECTOR_SELF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: var-log
+              mountPath: /var/log
+              readOnly: true
+            # /var/log/containers/*.log are symlinks into here — the actual
+            # log files live under the container runtime's data dir.
+            - name: var-lib-docker-containers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: data-dir
+              mountPath: /var/lib/vector
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          securityContext:
+            # Reading host log files requires root; no other privilege needed.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: vector-config
+        - name: var-log
+          hostPath:
+            path: /var/log
+        - name: var-lib-docker-containers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: data-dir
+          hostPath:
+            path: /var/lib/vector
+            type: DirectoryOrCreate

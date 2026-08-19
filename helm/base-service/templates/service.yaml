@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "base-service.fullname" . }}
+  labels:
+    {{- include "base-service.labels" . | nindent 4 }}
+spec:
+  # ClusterIP is mandatory; Cloudflare Tunnel is the only external entry point.
+  # LoadBalancer and NodePort are explicitly forbidden by platform policy.
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.service.port }}
+      # Routes to envoy-pep (port 8080), not directly to the app container
+      targetPort: http-envoy
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "base-service.selectorLabels" . | nindent 4 }}

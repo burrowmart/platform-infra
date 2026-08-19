@@ -1,0 +1,59 @@
+# Data-plane only: no OPAL_POLICY_REPO_URL is set, so OPAL never tries to
+# distribute policy (that's OPA's own S3 bundle poller — see ../opa). Single
+# replica, so OPAL_BROADCAST_URI (the multi-replica pub/sub backbone, e.g.
+# Postgres/Redis) is deliberately left unset; add it before scaling this out.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opal-server
+  namespace: opa-system
+  labels:
+    app: opal-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opal-server
+  template:
+    metadata:
+      labels:
+        app: opal-server
+    spec:
+      containers:
+        - name: opal-server
+          image: permitio/opal-server:latest
+          ports:
+            - name: http
+              containerPort: 7002
+          env:
+            - name: OPAL_AUTH_MASTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: opal-server-secrets
+                  key: master-token
+            # Initial full sync + periodic drift-correction poll against
+            # user-service's GET /internal/attributes. See
+            # opa-policies/opal/data-config.template.json for the shape and
+            # ../../../demo/run-demo.sh for how __SERVICE_TOKEN__ gets filled in.
+            - name: OPAL_DATA_CONFIG_SOURCES
+              valueFrom:
+                secretKeyRef:
+                  name: opal-server-secrets
+                  key: data-config-sources
+          readinessProbe:
+            tcpSocket:
+              port: 7002
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 7002
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

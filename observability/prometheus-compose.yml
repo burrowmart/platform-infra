@@ -1,0 +1,36 @@
+# Compose-local counterpart to ../k8s/observability/prometheus/prometheus.yml
+# — same service/namespace label convention (mirrors the Vector label
+# strategy so a dashboard variable drives both logs and metrics panels),
+# static targets instead of kubernetes_sd_configs since there's no
+# orchestrator API to query in Compose. Add a target here if another
+# service joins docker-compose.test.yml. Hostnames are Compose service
+# names (Docker's embedded DNS resolves these on the compose network
+# regardless of each service's container_name override).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: compose-services
+    static_configs:
+      - targets: ["order-service:3000"]
+        labels: { service: order-service, namespace: compose-local }
+      - targets: ["catalog-service:3000"]
+        labels: { service: catalog-service, namespace: compose-local }
+      - targets: ["payment-service:3000"]
+        labels: { service: payment-service, namespace: compose-local }
+
+  - job_name: rabbitmq
+    static_configs:
+      - targets: ["rabbitmq:15692"]
+        labels: { service: rabbitmq, namespace: compose-local }
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels: { service: otel-collector, namespace: compose-local }
+
+  - job_name: saga-metrics-exporter
+    static_configs:
+      - targets: ["saga-metrics-exporter:9308"]
+        labels: { service: saga-metrics-exporter, namespace: compose-local }

@@ -1,0 +1,36 @@
+# k8s-only — hostnames are in-cluster Service DNS. The Compose variant
+# (../../../observability/grafana-datasources-compose.yaml) is a separate
+# file for exactly that reason: same 3 datasources, different hostnames,
+# nothing else differs.
+#
+# NOTE on Loki<->Tempo auto-linking: Grafana's Loki datasource supports a
+# "derived field" that turns a captured value into a one-click link to a
+# Tempo trace, but only for an actual trace ID (it calls Tempo's
+# GET /api/traces/<id>). Our correlationId is the Cloudflare rayId, not a
+# trace ID — it's a *span attribute* (rayId), searched via TraceQL, not a
+# direct trace lookup. That's a materially different query, so a
+# derivedField link would silently 404 instead of working — deliberately
+# left out rather than shipping something that looks like a working link
+# but isn't. See ../../../docs/find-by-rayid.md for the two manual queries
+# (Loki LogQL + Tempo TraceQL) this actually requires.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus.observability.svc.cluster.local:9090
+    isDefault: true
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki.observability.svc.cluster.local:3100
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo.observability.svc.cluster.local:3200

@@ -1,0 +1,12 @@
+# Demo-sized. Bump storage or swap for a real StorageClass (gp3 etc.) for
+# anything longer-lived than a demo cluster's usual lifetime.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-storage
+  namespace: observability
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,110 @@
+# Integration-test override — adds order-service, catalog-service, and
+# payment-service (the saga participants) on top of the shared mongo/redis/
+# rabbitmq stack in docker-compose.yml, so the cross-service saga suite in
+# integration-tests/ can exercise the real saga over real containers.
+#
+# Usage (from this directory):
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --build
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml down -v
+#
+# Build context is the backend repo root (..), matching each service's
+# Dockerfile comment ("docker build -f <service>/Dockerfile .").
+#
+# restart: "no" is deliberate on all three app services — the crash-recovery
+# scenario does `docker kill order-service-it` and expects it to stay down
+# until the test explicitly restarts it; a restart policy would race that.
+
+services:
+
+  # This machine also runs a native (non-Docker) mongod bound to
+  # 127.0.0.1:27017, which macOS's socket routing prefers over Docker's
+  # wildcard port-forward — host-side tools hitting "localhost:27017" silently
+  # land on that other, unrelated Mongo instead of this stack's. Publish an
+  # unambiguous second host port so the test package (which runs on the host,
+  # not in a container) reliably reaches the right one.
+  mongo:
+    ports:
+      - "27017:27017"
+      - "27018:27017"
+
+  order-service:
+    build:
+      context: ..
+      dockerfile: order-service/Dockerfile
+    container_name: order-service-it
+    restart: "no"
+    ports:
+      - "4001:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      MONGO_URI: "mongodb://mongo:27017/orders_it?replicaSet=rs0"
+      AUTH_DISABLED: "true"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      REDIS_URL: "redis://redis:6379"
+      OUTBOX_PUBLISHER_ENABLED: "true"
+      OTEL_SERVICE_NAME: order-service
+      # Generous headroom over the crash-recovery scenario's kill+restart
+      # window so it never races the timeout scheduler into a spurious retry
+      # (which would show up as an unwanted extra saga_log stepHistory entry).
+      SAGA_STEP_TIMEOUT_MS: "60000"
+
+  catalog-service:
+    build:
+      context: ..
+      dockerfile: catalog-service/Dockerfile
+    container_name: catalog-service-it
+    restart: "no"
+    ports:
+      - "4002:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      MONGO_URI: "mongodb://mongo:27017/catalog_it?replicaSet=rs0"
+      AUTH_DISABLED: "true"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      REDIS_URL: "redis://redis:6379"
+      OUTBOX_PUBLISHER_ENABLED: "true"
+      OTEL_SERVICE_NAME: catalog-service
+
+  payment-service:
+    build:
+      context: ..
+      dockerfile: payment-service/Dockerfile
+    container_name: payment-service-it
+    restart: "no"
+    ports:
+      - "4003:3000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      MONGO_URI: "mongodb://mongo:27017/payments_it?replicaSet=rs0"
+      AUTH_DISABLED: "true"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+      REDIS_URL: "redis://redis:6379"
+      OUTBOX_PUBLISHER_ENABLED: "true"
+      OTEL_SERVICE_NAME: payment-service
+      # PSP simulation threshold (cents) — the "failed payment" scenario places
+      # an order whose total exceeds this; the happy-path order stays under it.
+      FAIL_PAYMENT_OVER_AMOUNT: "5000"

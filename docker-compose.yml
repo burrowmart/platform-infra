@@ -1,0 +1,97 @@
+# Local dev stack — archtenet backend infrastructure
+#
+# Mongo runs as a single-node replica set (rs0) because change streams,
+# which power the transactional outbox in every service, require a replica set.
+
+services:
+
+  # ── MongoDB ──────────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      # On first start rs.status() throws → we initiate rs0, then retry.
+      # Resolves healthy only after the node reaches PRIMARY state (myState=1).
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - >-
+          try { var s=rs.status(); if(s.myState===1) quit(0); quit(1); }
+          catch(e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}); quit(1); }
+      interval: 5s
+      timeout: 10s
+      retries: 15
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Redis ─────────────────────────────────────────────────────────────────
+  # Roles: cart state (cart-bff), notification hot layer, pub/sub fan-out,
+  #        chat presence/typing (TTL), outbox leader-election lock.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── RabbitMQ ──────────────────────────────────────────────────────────────
+  # Management UI → http://localhost:15672  (guest / guest)
+  # Exchanges: saga.commands, saga.replies, domain.events
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── user-service template — uncomment to run one service against this stack
+  # user-service:
+  #   image: ghcr.io/myorg/user-service:latest   # or use: build: ../user-service
+  #   ports:
+  #     - "3001:3000"
+  #   depends_on:
+  #     mongo:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #     rabbitmq:
+  #       condition: service_healthy
+  #   environment:
+  #     NODE_ENV: development
+  #     PORT: "3000"
+  #     # replicaSet=rs0 is required so the Mongoose driver uses the replica-set
+  #     # protocol, which is what enables change streams for the outbox watcher.
+  #     MONGO_URI: "mongodb://mongo:27017/users?replicaSet=rs0"
+  #     REDIS_URL: "redis://redis:6379"
+  #     RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
+  #     COGNITO_USER_POOL_ID: "us-east-1_XXXXXXXXX"   # fill before running
+  #     COGNITO_CLIENT_ID: "your-client-id"            # fill before running
+  #     LOG_LEVEL: "debug"
+
+volumes:
+  mongo-data:
+  redis-data:
+  rabbitmq-data:

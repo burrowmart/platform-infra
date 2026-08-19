@@ -1,0 +1,61 @@
+# Deployed into `default`, not `observability` — deliberately co-located
+# with order-service (see other services' helm/values.yaml env vars like
+# CATALOG_SERVICE_URL: "http://catalog-service.default.svc.cluster.local":
+# every app service lives in the `default` namespace in this cluster).
+# Secrets are namespace-scoped, so mounting order-service's `MONGO_URI`
+# Secret via envFrom.secretRef (below) only works from the same namespace
+# it was synced into. Prometheus still finds and scrapes this pod exactly
+# like every other one — prometheus.yml's kubernetes_sd_config has no
+# namespace filter, it's annotation-based across the whole cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saga-metrics-exporter
+  namespace: default
+  labels:
+    app: saga-metrics-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: saga-metrics-exporter
+  template:
+    metadata:
+      labels:
+        app: saga-metrics-exporter
+        app.kubernetes.io/name: saga-metrics-exporter
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9308"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: saga-metrics-exporter
+          image: ghcr.io/archtenet/saga-metrics-exporter:latest
+          ports:
+            - name: metrics
+              containerPort: 9308
+          envFrom:
+            # Reuses order-service's own MONGO_URI (and whatever else is in
+            # that Secret — only MONGO_URI is read) rather than provisioning
+            # a separate credential. See README.md.
+            - secretRef:
+                name: order-service
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9308
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

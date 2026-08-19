@@ -1,0 +1,47 @@
+# Single-binary Loki, filesystem-backed — fine at this demo's scale (a
+# handful of services, a saga integration suite as the traffic generator).
+# Environment-agnostic on purpose: this exact file is mounted unmodified by
+# both the k8s ConfigMap (see ../README.md) and the Compose observability
+# profile (../../../docker-compose.observability.yml) — Loki's config has no
+# hostnames or replica topology to differ between the two.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Loosened from Loki's conservative defaults: the saga integration suite
+  # fires a burst of requests across 3 services in a few seconds, which is
+  # enough to trip the out-of-the-box per-stream rate limit for a demo pod
+  # sized at a few hundred MB.
+  reject_old_samples: false
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+  per_stream_rate_limit: 8MB
+  per_stream_rate_limit_burst: 16MB
+
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem

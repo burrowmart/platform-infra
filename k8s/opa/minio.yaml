@@ -1,0 +1,64 @@
+# DEMO-ONLY local stand-in for the real S3 bucket that
+# platform-infra/terraform/modules/opa-bundle-bucket provisions in AWS. Real
+# S3 needs no in-cluster resource at all — the OPA DaemonSet just polls it
+# over the internet via IRSA credentials. This exists purely so the kind
+# demo exercises the exact same OPA `services.s3` / `s3_signing` code path
+# without touching a real AWS account. Root credentials below are MinIO's
+# own well-known quickstart defaults, not a secret worth protecting — this
+# pod only ever exists inside an ephemeral local kind cluster.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: opa-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args: ["server", "/data"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: opa-s3-credentials
+                  key: access-key-id
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: opa-s3-credentials
+                  key: secret-access-key
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: opa-system
+spec:
+  selector:
+    app: minio
+  ports:
+    - port: 9000
+      targetPort: 9000
