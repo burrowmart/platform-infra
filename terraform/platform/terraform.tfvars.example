@@ -3,10 +3,22 @@
 # particular should come from TF_VAR_cloudflare_api_token or a secrets
 # manager, not a checked-in tfvars file.
 
-aws_region     = "eu-west-1"
+# Must match ../cluster/terraform.tfvars.
+aws_region     = "eu-central-1"
 aws_account_id = "111122223333"
 
-eks_cluster_name = "archtenet-prod"
+# Where the ../cluster root's state lives. Everything needed to reach the
+# cluster (kubeconfig parameter, OIDC provider, instance id) is read from it.
+cluster_state_path = "../cluster/terraform.tfstate"
+
+# Leave unset: the kubeconfig points at https://127.0.0.1:6443 and reaches the
+# API server through the SSM port-forward (`make tunnel`). Only set this if
+# you opened 6443 directly via the cluster root's api_allowed_cidrs.
+# k8s_api_url = "https://<node-eip>:6443"
+
+# "ssm" (default, free) or "secretsmanager" ($0.40/secret/month x 60 secrets).
+secrets_backend = "ssm"
+
 
 cloudflare_account_id = "0123456789abcdef0123456789abcdef"
 cloudflare_zone_id    = "0123456789abcdef0123456789abcdef"
@@ -23,7 +35,7 @@ opa_bundle_bucket_name = "archtenet-opa-bundles-111122223333"
 tags = {
   Project     = "archtenet"
   ManagedBy   = "terraform"
-  Environment = "prod"
+  Environment = "demo"
 }
 
 # secret_values — leave out of any committed file. Populate via a gitignored

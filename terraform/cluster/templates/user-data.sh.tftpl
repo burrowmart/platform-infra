@@ -1,0 +1,99 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# k3s single-node bootstrap.
+#
+# Runs once, on first boot (cloud-init does not re-run it on stop/start, which
+# matters because a Spot reclaim stops this box rather than terminating it).
+#
+# Three jobs:
+#   1. install k3s with the API server's service-account issuer pointed at the
+#      public OIDC bucket, so IRSA works (see oidc.tf)
+#   2. publish the API server's JWKS + discovery doc to that bucket
+#   3. stash the kubeconfig in SSM Parameter Store, which is how the platform
+#      Terraform root and CI reach the cluster
+# ---------------------------------------------------------------------------
+set -euxo pipefail
+
+exec > >(tee -a /var/log/k3s-bootstrap.log) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y curl unzip jq
+
+# --- awscli v2 (not in the Ubuntu AMI; the snap-shipped SSM agent is) -------
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+export PATH="/usr/local/bin:$PATH"
+export AWS_DEFAULT_REGION="${aws_region}"
+
+snap start amazon-ssm-agent || true
+
+# --- k3s -------------------------------------------------------------------
+# --disable traefik:  ingress-nginx is installed by the platform root and is
+#                     what the Cloudflare Tunnel forwards to.
+# --disable servicelb: nothing in this architecture may be a LoadBalancer
+#                     Service, so the klipper LB is dead weight.
+# local-path-provisioner and metrics-server are kept: PVCs (Mongo/Redis/
+# RabbitMQ) and the HPAs in the base-service chart need them.
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_VERSION="${k3s_version}" \
+  sh -s - server \
+    --disable traefik \
+    --disable servicelb \
+    --write-kubeconfig-mode 0644 \
+    --tls-san "${node_public_ip}" \
+    --kube-apiserver-arg=service-account-issuer=${oidc_issuer}
+
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+# --- wait for the API server ----------------------------------------------
+for i in $(seq 1 60); do
+  if kubectl get --raw /healthz >/dev/null 2>&1; then break; fi
+  echo "waiting for kube-apiserver ($i/60)"
+  sleep 5
+done
+kubectl get --raw /healthz
+
+# --- verify the issuer actually took --------------------------------------
+# k3s defaults service-account-issuer to https://kubernetes.default.svc.cluster.local
+# and the extra-arg merge is what overrides it. If that ever stops working,
+# tokens would be signed with the wrong `iss` and every IRSA assume-role would
+# fail with an opaque STS error hours later. Fail here instead, loudly.
+ACTUAL_ISSUER="$(kubectl get --raw /.well-known/openid-configuration | jq -r .issuer)"
+if [ "$ACTUAL_ISSUER" != "${oidc_issuer}" ]; then
+  echo "FATAL: service-account issuer is '$ACTUAL_ISSUER', expected '${oidc_issuer}'. IRSA would not work." >&2
+  exit 1
+fi
+
+# --- publish OIDC discovery ------------------------------------------------
+kubectl get --raw /openid/v1/jwks > /tmp/keys.json
+jq -e '.keys | length > 0' /tmp/keys.json  # empty JWKS => broken IRSA, fail now
+
+cat > /tmp/openid-configuration <<EOF
+{
+  "issuer": "${oidc_issuer}",
+  "jwks_uri": "${oidc_issuer}/keys.json",
+  "authorization_endpoint": "urn:kubernetes:programmatic_authorization",
+  "response_types_supported": ["id_token"],
+  "subject_types_supported": ["public"],
+  "id_token_signing_alg_values_supported": ["RS256"],
+  "claims_supported": ["sub", "iss"]
+}
+EOF
+
+aws s3 cp /tmp/openid-configuration "s3://${oidc_bucket}/.well-known/openid-configuration" --content-type application/json
+aws s3 cp /tmp/keys.json "s3://${oidc_bucket}/keys.json" --content-type application/json
+
+# --- publish the kubeconfig ------------------------------------------------
+# Left pointing at https://127.0.0.1:6443 on purpose: it is consumed through
+# an SSM Session Manager port-forward (`make tunnel`), so the loopback address
+# is correct on the client side and the security group needs no ingress rule.
+aws ssm put-parameter \
+  --name "${kubeconfig_param}" \
+  --type SecureString \
+  --tier Intelligent-Tiering \
+  --overwrite \
+  --value "$(cat /etc/rancher/k3s/k3s.yaml)"
+
+echo "k3s bootstrap complete"

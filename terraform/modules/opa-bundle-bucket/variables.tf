@@ -30,16 +30,16 @@ variable "writer_allowed_ref" {
 }
 
 # ---------------------------------------------------------------------------
-# Reader role — OPA PDP DaemonSet, pulls bundles via EKS IRSA
+# Reader role — OPA PDP DaemonSet, pulls bundles via IRSA
 # ---------------------------------------------------------------------------
 
-variable "eks_oidc_provider_arn" {
-  description = "ARN of the EKS cluster's IAM OIDC identity provider."
+variable "cluster_oidc_provider_arn" {
+  description = "ARN of the cluster's IAM OIDC identity provider (terraform/cluster output oidc_provider_arn)."
   type        = string
 }
 
-variable "eks_oidc_provider_url" {
-  description = "Issuer URL of the EKS cluster's OIDC provider (with https://)."
+variable "cluster_oidc_provider_url" {
+  description = "Service-account token issuer URL of the cluster (terraform/cluster output oidc_provider_url)."
   type        = string
 }
 

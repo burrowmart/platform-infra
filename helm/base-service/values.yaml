@@ -16,6 +16,11 @@ app:
   port: 3000
   # Key/value pairs injected as container env vars (on top of secrets from ExternalSecret)
   env: {}
+  # Extra plain Secrets to mount via envFrom, in addition to the one External
+  # Secrets Operator syncs. This is the local-development path: with
+  # externalSecrets.enabled=false there is no synced Secret, so MONGO_URI and
+  # friends come from a Secret created by hand instead.
+  extraEnvFromSecrets: []
 
 # Resource requests/limits for the app container
 resources:
@@ -32,6 +37,11 @@ resources:
 # allowed requests to 127.0.0.1:app.port. Pin to a digest in production.
 # ---------------------------------------------------------------------------
 envoy:
+  # Turning this off removes the sidecar AND its ConfigMap, and repoints the
+  # Service at the app container. Only do that locally: with no PEP in front,
+  # nothing enforces OPA authorization, which is the whole point of the
+  # architecture in any deployed environment.
+  enabled: true
   image: "envoyproxy/envoy:v1.29-latest"
   resources:
     requests:
@@ -61,7 +71,14 @@ service:
 # so no TLS stanza is needed on this Ingress.
 # ---------------------------------------------------------------------------
 ingress:
+  # Off locally: a laptop cluster has no Cloudflare Tunnel and no
+  # nginx-internal IngressClass. Use `kubectl port-forward` there instead.
+  enabled: true
   host: example-service.internal.example.com
+  # IngressClass to bind to. nginx-internal is the cluster-internal class the
+  # Cloudflare Tunnel forwards into; a local kind cluster running stock
+  # ingress-nginx would use "nginx".
+  className: nginx-internal
   path: /
   pathType: Prefix
   # Merged over the chart's hardcoded defaults (proxy-read-timeout etc.) — a
@@ -81,22 +98,50 @@ opaAddress: "opa-pdp.opa-system.svc.cluster.local:9191"
 # Secrets & Identity
 # ---------------------------------------------------------------------------
 
-# AWS Secrets Manager JSON path; External Secrets Operator syncs all keys into a k8s Secret
-secretsManagerPath: "/prod/example-service"
+# External Secrets Operator integration. Off locally: the ESO CRDs aren't
+# installed on a laptop cluster, so rendering an ExternalSecret there makes
+# `helm install` fail with "no matches for kind ExternalSecret".
+externalSecrets:
+  enabled: true
 
-# EKS IRSA role ARN annotated on the ServiceAccount — grants the pod AWS API access
+# Path External Secrets Operator syncs from into a k8s Secret. Matches the
+# terraform secrets module's "<prefix>/<service>/" layout — with the default
+# secrets_backend = "ssm" that is an SSM Parameter Store path (leading slash),
+# with "secretsmanager" it is a Secrets Manager name (no leading slash).
+secretsManagerPath: "/svc/example-service"
+
+# ClusterSecretStore the ExternalSecret reads through. Name it after the
+# backend so a mismatch is obvious: aws-parameter-store (secrets_backend =
+# "ssm", the default) or aws-secrets-manager.
+secretStoreName: "aws-parameter-store"
+
+# IRSA role ARN from the terraform platform root's irsa_role_arns output.
+# Setting it turns on the projected sts.amazonaws.com token, the AWS_* env
+# vars and the ServiceAccount annotation. Set to "" (or null) to disable AWS
+# access entirely for a service — e.g. when running against docker-compose.
 irsaRoleArn: "arn:aws:iam::123456789012:role/example-service-irsa"
+
+aws:
+  # Region the IRSA role and the secret store live in. Required whenever
+  # irsaRoleArn is set — the AWS SDK has no instance metadata to fall back on
+  # inside the pod, so an unset region fails at the first API call.
+  region: "eu-central-1"
 
 # ---------------------------------------------------------------------------
 # Autoscaling
 # ---------------------------------------------------------------------------
 autoscaling:
+  # Needs metrics-server, and is meaningless on one node.
+  enabled: true
   minReplicas: 2
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
 
 # Ensures at least one pod survives a voluntary disruption (node drain, rollout)
 podDisruptionBudget:
+  # Turn off when replicaCount is 1: minAvailable 1 then forbids the eviction
+  # a rolling update requires, and `helm upgrade` hangs rather than failing.
+  enabled: true
   minAvailable: 1
 
 # ---------------------------------------------------------------------------

@@ -3,13 +3,13 @@
 # ---------------------------------------------------------------------------
 
 variable "aws_region" {
-  description = "AWS region hosting the EKS cluster and every resource in this tree."
+  description = "AWS region hosting the cluster and every resource in this tree. Must match the ../cluster root's aws_region."
   type        = string
 }
 
 variable "aws_account_id" {
   description = <<-EOT
-    AWS account ID that owns the EKS cluster. Pinned explicitly (rather than
+    AWS account ID that owns the cluster. Pinned explicitly (rather than
     read via a data source) so an `apply` fails fast against the wrong
     account instead of silently succeeding in it.
   EOT
@@ -29,12 +29,29 @@ variable "tags" {
 }
 
 # ---------------------------------------------------------------------------
-# EKS (existing cluster — looked up, never created here)
+# Cluster (created by the ../cluster root — never created here)
 # ---------------------------------------------------------------------------
 
-variable "eks_cluster_name" {
-  description = "Name of the pre-existing EKS cluster this tree wires infra around."
+variable "cluster_state_path" {
+  description = <<-EOT
+    Path to the ../cluster root's state file. Everything this root needs to
+    talk to the cluster — kubeconfig parameter name, OIDC provider, instance
+    id — is read from it. Point at a remote backend config instead if you
+    move the cluster state off local disk.
+  EOT
   type        = string
+  default     = "../cluster/terraform.tfstate"
+}
+
+variable "k8s_api_url" {
+  description = <<-EOT
+    Overrides the API server URL from the published kubeconfig. Leave null:
+    the kubeconfig says https://127.0.0.1:6443, which is correct when the
+    SSM port-forward is open (`make tunnel`). Set this only if you opened
+    6443 directly via the cluster root's api_allowed_cidrs.
+  EOT
+  type        = string
+  default     = null
 }
 
 # ---------------------------------------------------------------------------
@@ -149,6 +166,29 @@ variable "domain_services" {
     cart-bff             = { namespace = "cart-bff" }
     payment-bff          = { namespace = "payment-bff" }
     ws-gateway           = { namespace = "ws-gateway" }
+  }
+}
+
+variable "secrets_backend" {
+  description = <<-EOT
+    Where service secrets live.
+
+    "ssm" (default) — SSM Parameter Store, Standard tier: free. Chosen as the
+    default because Secrets Manager bills $0.40 per secret per month, and this
+    tree creates 5 secrets x 12 services = 60 of them. That is ~$24/month, more
+    than the cluster node itself, for a demo. External Secrets Operator reads
+    Parameter Store natively (ClusterSecretStore provider: aws, service:
+    ParameterStore) so nothing downstream changes except that one field.
+
+    "secretsmanager" — the original behaviour. Use it if you specifically want
+    to demonstrate rotation or cross-account secret sharing.
+  EOT
+  type        = string
+  default     = "ssm"
+
+  validation {
+    condition     = contains(["ssm", "secretsmanager"], var.secrets_backend)
+    error_message = "secrets_backend must be \"ssm\" or \"secretsmanager\"."
   }
 }
 

@@ -54,49 +54,79 @@ resource "aws_iam_role" "deploy" {
   tags               = var.tags
 }
 
-# Least-privilege IAM policy: only what `aws eks update-kubeconfig` needs.
-# No ECR permissions anywhere — images are published to ghcr.io. Actual
-# Kubernetes-level deploy permissions (helm/kubectl) come from the EKS
-# access entry + policy association below, not from IAM policy.
+# ---------------------------------------------------------------------------
+# Least-privilege deploy policy.
+#
+# There is no EKS here, so there is no `aws eks update-kubeconfig` and no EKS
+# access entry. CI reaches the API server exactly the way a developer does:
+# read the kubeconfig out of SSM, then open a Session Manager port-forward to
+# 6443 on the node. That means the cluster still has zero inbound
+# security-group rules, and Kubernetes-level authorization comes from the
+# kubeconfig's client certificate rather than from IAM.
+#
+# Caveat worth stating plainly: that certificate is k3s's cluster-admin. EKS
+# access policies gave finer-grained scoping (AmazonEKSEditPolicy) that a
+# single-node k3s box cannot reproduce without issuing per-repo client certs
+# and RBAC bindings. Acceptable for a demo cluster; not for production.
+# No ECR permissions anywhere — images are published to ghcr.io.
+# ---------------------------------------------------------------------------
 data "aws_iam_policy_document" "deploy" {
   statement {
-    sid       = "EKSDescribeOnly"
+    sid       = "ReadKubeconfig"
     effect    = "Allow"
-    actions   = ["eks:DescribeCluster"]
-    resources = [var.eks_cluster_arn]
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:parameter${var.kubeconfig_parameter_name}"]
+  }
+
+  statement {
+    sid       = "DecryptKubeconfig"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["ssm.${var.aws_region}.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "DescribeClusterNode"
+    effect    = "Allow"
+    actions   = ["ec2:DescribeInstances"]
+    resources = ["*"] # ec2:DescribeInstances does not support resource-level constraints
+  }
+
+  # Port-forward only — AWS-StartPortForwardingSession cannot open a shell.
+  statement {
+    sid     = "PortForwardToApiServer"
+    effect  = "Allow"
+    actions = ["ssm:StartSession"]
+    resources = [
+      "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/${var.cluster_instance_id}",
+      "arn:aws:ssm:${var.aws_region}::document/AWS-StartPortForwardingSession",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:SessionDocumentAccessCheck"
+      values   = ["true"]
+    }
+  }
+
+  statement {
+    sid       = "TerminateOwnSession"
+    effect    = "Allow"
+    actions   = ["ssm:TerminateSession", "ssm:ResumeSession"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${var.aws_account_id}:session/*"]
   }
 }
 
 resource "aws_iam_role_policy" "deploy" {
   for_each = aws_iam_role.deploy
 
-  name   = "eks-describe"
+  name   = "cluster-deploy"
   role   = each.value.id
   policy = data.aws_iam_policy_document.deploy.json
-}
-
-# EKS access entries are the modern (non aws-auth-ConfigMap) way to grant a
-# principal Kubernetes API access. This is what actually authorizes
-# `helm upgrade` / `kubectl apply` — the IAM policy above only gets the role
-# far enough to resolve cluster connection details.
-resource "aws_eks_access_entry" "deploy" {
-  for_each = aws_iam_role.deploy
-
-  cluster_name  = var.eks_cluster_name
-  principal_arn = each.value.arn
-  type          = "STANDARD"
-}
-
-resource "aws_eks_access_policy_association" "deploy" {
-  for_each = aws_iam_role.deploy
-
-  cluster_name  = var.eks_cluster_name
-  principal_arn = each.value.arn
-  policy_arn    = var.eks_access_policy_arn
-
-  access_scope {
-    type = "cluster"
-  }
-
-  depends_on = [aws_eks_access_entry.deploy]
 }

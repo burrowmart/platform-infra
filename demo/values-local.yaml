@@ -1,0 +1,97 @@
+# ---------------------------------------------------------------------------
+# Local development overlay.
+#
+#   helm install user-service ./helm \
+#     -f ../platform-infra/demo/values-local.yaml \
+#     --set base-service.image.repository=user-service \
+#     --set base-service.image.tag=local
+#
+# Everything switched off here is switched off because it needs something a
+# laptop cluster does not have — AWS, the OPA PDP, the Cloudflare Tunnel, more
+# than one node. Nothing here is a shortcut you would take in a real
+# environment, and the deployed configuration is unchanged by its existence.
+# ---------------------------------------------------------------------------
+base-service:
+
+  # One pod, not two: a laptop runs 12 services plus Mongo, Redis and RabbitMQ.
+  replicaCount: 1
+
+  image:
+    # Images are built locally and loaded straight into the cluster, so there
+    # is no registry to pull from. Never means "don't try".
+    pullPolicy: Never
+
+  # No AWS. This also removes the projected sts.amazonaws.com token and the
+  # AWS_* env vars from the pod.
+  irsaRoleArn: ""
+
+  # No External Secrets Operator and no AWS to sync from. Secrets come from a
+  # plain Kubernetes Secret instead — see extraEnvFromSecrets below.
+  externalSecrets:
+    enabled: false
+
+  # LEFT ON. demo/opa.yaml runs a real OPA PDP on the laptop cluster, so
+  # the sidecar has something to ask and the authorization path is genuinely
+  # exercised — real ext_authz, real JWT signature verification, real
+  # allow/deny from the same opa-policies/bundle that runs in AWS.
+  #
+  # Apply demo/opa.yaml BEFORE installing any service. Without a PDP,
+  # Envoy's failure_mode_allow: false denies every request — correct
+  # behaviour, but it looks exactly like a broken service.
+  #
+  # If you deliberately want the lighter path (no OPA, no authorization at
+  # all), add: --set base-service.envoy.enabled=false
+  envoy:
+    enabled: true
+
+  # LEFT ON, with the same IngressClass as AWS. demo/ingress-nginx-values.yaml
+  # installs a controller that owns nginx-internal, so the rendered Ingress is
+  # byte-for-byte what the deployed cluster gets — including the
+  # configuration-snippet that seeds x-correlation-id from cf-ray.
+  #
+  # What is still missing locally is the Cloudflare Tunnel in front of it:
+  # there, cloudflared dials out and forwards to the controller's ClusterIP
+  # Service. Here the controller binds the node's port 80 and kind maps it to
+  # host 8081, so you reach it with a Host header (docs step 9).
+  #
+  # The hostnames stay *.internal.archtenet.com and resolve nowhere — that is
+  # fine, nginx routes on the Host header, not on DNS.
+  ingress:
+    enabled: true
+
+  # Both need more than one node to mean anything, and a PDB with one replica
+  # actively blocks rolling updates.
+  autoscaling:
+    enabled: false
+  podDisruptionBudget:
+    enabled: false
+
+  # Smaller footprint so a dozen of these fit on one laptop.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  app:
+    env:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      # No Cognito pool locally. Every service's JWKS guard honours this flag
+      # (see any service's .env.example); with it unset they reject every
+      # request with 401 and the service looks broken.
+      AUTH_DISABLED: "true"
+      # Nothing is collecting traces locally; pointing the exporter at a dead
+      # address just fills the log with connection errors.
+      OTEL_SDK_DISABLED: "true"
+      # Explicit rather than relying on the code default: this is the module
+      # that watches the Mongo outbox collection via a change stream and
+      # publishes to RabbitMQ. With it off, sagas silently never progress.
+      OUTBOX_PUBLISHER_ENABLED: "true"
+    # Created by demo/platform-secret.yaml. Holds REDIS_URL and RABBITMQ_URL —
+    # exactly the keys ESO would have synced in AWS. MONGO_URI arrives in a
+    # second, per-service Secret (each service owns its own database).
+    extraEnvFromSecrets:
+      - platform-local

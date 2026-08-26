@@ -10,8 +10,10 @@ spec:
   type: ClusterIP
   ports:
     - port: {{ .Values.service.port }}
-      # Routes to envoy-pep (port 8080), not directly to the app container
-      targetPort: http-envoy
+      # Normally routes to envoy-pep (:8080) so every request is authorized
+      # before it reaches the app. With the sidecar disabled (local dev) there
+      # is nothing in front, so the Service targets the app port directly.
+      targetPort: {{ if .Values.envoy.enabled }}http-envoy{{ else }}http-app{{ end }}
       protocol: TCP
       name: http
   selector:

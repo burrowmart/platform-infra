@@ -29,6 +29,39 @@ resource "helm_release" "ingress_nginx_internal" {
 
         replicaCount = var.replica_count
 
+        # ---------------------------------------------------------------
+        # Required for the base-service chart to deploy at all.
+        #
+        # Every service's Ingress carries
+        # nginx.ingress.kubernetes.io/configuration-snippet, which seeds
+        # x-correlation-id from Cloudflare's $http_cf_ray — the start of the
+        # correlation chain ARCHITECTURE.md's acceptance criterion 3 depends
+        # on. ingress-nginx disables snippet annotations by default since
+        # v1.9 (CVE-2021-25742), and v1.12+ additionally gates them behind an
+        # annotations risk level. With either left at its default, the
+        # admission webhook REJECTS the Ingress outright:
+        #
+        #   admission webhook "validate.nginx.ingress.kubernetes.io" denied
+        #   the request: annotation group ConfigurationSnippet contains risky
+        #   annotation based on ingress configuration
+        #
+        # i.e. every `helm upgrade --install` in CI fails. Verified against
+        # ingress-nginx on a kind cluster: both settings are needed, neither
+        # alone is enough.
+        #
+        # This re-opens the class of attack those defaults guard against
+        # (snippet injection via a crafted Ingress). It is acceptable here
+        # only because Ingress objects come exclusively from this repo's own
+        # charts and CI has no path to create arbitrary ones. If untrusted
+        # tenants ever get to create Ingresses in this cluster, move the
+        # header injection into the controller's global config
+        # (controller.config.http-snippet) and drop both of these.
+        allowSnippetAnnotations = true
+
+        config = merge({
+          "annotations-risk-level" = "Critical"
+        }, var.controller_config)
+
         ingressClassResource = {
           name            = var.ingress_class_name
           default         = false

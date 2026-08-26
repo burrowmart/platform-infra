@@ -1,0 +1,60 @@
+# ---------------------------------------------------------------------------
+# ingress-nginx for the laptop cluster.
+#
+# Mirrors terraform/modules/internal-ingress (same release name, same
+# IngressClass, same ClusterIP Service) so the Ingress objects the service
+# charts render are byte-for-byte what AWS gets. Two differences, both forced
+# by the lack of a Cloudflare Tunnel:
+#
+#   hostPort — in AWS nothing reaches the controller from outside the
+#   cluster; cloudflared dials out and forwards to the ClusterIP Service.
+#   Locally there is no tunnel, so the controller binds the node's port 80,
+#   which kind maps to host 8081 (demo/kind-config.yaml). The Service stays
+#   ClusterIP: no LoadBalancer and no NodePort here either.
+#
+#   replicaCount 1 — one node.
+#
+#   helm install ingress-nginx-internal ingress-nginx/ingress-nginx \
+#     -n ingress --create-namespace -f demo/ingress-nginx-values.yaml
+# ---------------------------------------------------------------------------
+fullnameOverride: ingress-nginx-internal
+
+controller:
+  name: ""
+  replicaCount: 1
+
+  ingressClassResource:
+    name: nginx-internal
+    default: false
+    controllerValue: k8s.io/nginx-internal
+  ingressClass: nginx-internal
+  watchIngressWithoutClass: false
+
+  service:
+    type: ClusterIP
+
+  hostPort:
+    enabled: true
+
+  nodeSelector:
+    # Set by demo/kind-config.yaml's kubeadm patch.
+    ingress-ready: "true"
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Equal
+      effect: NoSchedule
+
+  # Both are required, and neither is enough on its own — verified on kind.
+  # Every service's Ingress carries a configuration-snippet annotation that
+  # seeds x-correlation-id from $http_cf_ray. Without these the admission
+  # webhook rejects the Ingress with "annotation group ConfigurationSnippet
+  # contains risky annotation", and `helm install` of any service fails.
+  # Same settings as terraform/modules/internal-ingress — see the long note
+  # there on what this re-opens and when not to do it.
+  allowSnippetAnnotations: true
+  config:
+    annotations-risk-level: "Critical"
+
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }

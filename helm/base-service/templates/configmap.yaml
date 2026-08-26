@@ -1,3 +1,5 @@
+{{- /* Envoy's bootstrap config — only needed when the PEP sidecar runs. */ -}}
+{{- if .Values.envoy.enabled }}
 {{/*
 Envoy static bootstrap config is rendered at deploy time so that opaAddress and
 app.port are baked into the ConfigMap. For node-local OPA DaemonSet access,
@@ -122,3 +124,4 @@ data:
                   socket_address:
                     address: {{ $opaHost }}
                     port_value: {{ $opaPort }}
+{{- end }}

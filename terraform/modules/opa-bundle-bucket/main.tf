@@ -94,7 +94,7 @@ resource "aws_iam_role_policy" "writer" {
 }
 
 # ---------------------------------------------------------------------------
-# Reader — OPA PDP DaemonSet, via EKS IRSA. Read-only.
+# Reader — OPA PDP DaemonSet, via IRSA. Read-only.
 # ---------------------------------------------------------------------------
 
 data "aws_iam_policy_document" "reader_assume_role" {
@@ -105,18 +105,18 @@ data "aws_iam_policy_document" "reader_assume_role" {
 
     principals {
       type        = "Federated"
-      identifiers = [var.eks_oidc_provider_arn]
+      identifiers = [var.cluster_oidc_provider_arn]
     }
 
     condition {
       test     = "StringEquals"
-      variable = "${trimprefix(var.eks_oidc_provider_url, "https://")}:aud"
+      variable = "${trimprefix(var.cluster_oidc_provider_url, "https://")}:aud"
       values   = ["sts.amazonaws.com"]
     }
 
     condition {
       test     = "StringEquals"
-      variable = "${trimprefix(var.eks_oidc_provider_url, "https://")}:sub"
+      variable = "${trimprefix(var.cluster_oidc_provider_url, "https://")}:sub"
       values   = ["system:serviceaccount:${var.opa_namespace}:${var.opa_service_account}"]
     }
   }

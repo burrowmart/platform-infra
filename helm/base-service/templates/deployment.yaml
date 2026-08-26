@@ -14,8 +14,10 @@ spec:
       labels:
         {{- include "base-service.selectorLabels" . | nindent 8 }}
       annotations:
+        {{- if .Values.envoy.enabled }}
         # Force pod restart when the Envoy ConfigMap changes
         checksum/envoy-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
         # Prometheus annotation-based scrape discovery (see
         # platform-infra/k8s/observability/prometheus/prometheus.yml). Points
         # straight at the app container's port, bypassing the Envoy sidecar —
@@ -49,11 +51,41 @@ spec:
             - name: {{ $key }}
               value: {{ $val | quote }}
             {{- end }}
+            {{- if .Values.irsaRoleArn }}
+            # IRSA, done by hand. On EKS the pod-identity webhook injects
+            # these three from the ServiceAccount annotation; this cluster is
+            # k3s, which has no such webhook, so the chart sets them itself.
+            # The AWS SDK's default credential chain picks them up unchanged,
+            # so service code stays identical to the EKS version.
+            - name: AWS_ROLE_ARN
+              value: {{ .Values.irsaRoleArn | quote }}
+            - name: AWS_WEB_IDENTITY_TOKEN_FILE
+              value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+            - name: AWS_REGION
+              value: {{ .Values.aws.region | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.aws.region | quote }}
+            - name: AWS_STS_REGIONAL_ENDPOINTS
+              value: regional
+            {{- end }}
           # All secrets from AWS Secrets Manager (synced by ESO) injected as env vars
           envFrom:
             - secretRef:
                 name: {{ include "base-service.fullname" . }}
                 optional: true  # avoids init-crash if ESO hasn't synced yet on first deploy
+            {{- range .Values.app.extraEnvFromSecrets }}
+            # Locally, where ESO is off, this is how MONGO_URI/REDIS_URL/etc.
+            # reach the container: a plain Secret created by hand or by the
+            # local overlay, mounted exactly the way the synced one would be.
+            - secretRef:
+                name: {{ . | quote }}
+            {{- end }}
+          {{- if .Values.irsaRoleArn }}
+          volumeMounts:
+            - name: aws-iam-token
+              mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount
+              readOnly: true
+          {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           # Kubelet probes bypass Envoy and hit the app port directly
@@ -77,6 +109,7 @@ spec:
               drop:
                 - ALL
 
+        {{- if .Values.envoy.enabled }}
         # ---------------------------------------------------------------
         # envoy-pep: Policy Enforcement Point sidecar.
         # Listens on :8080; calls OPA PDP over gRPC; forwards allowed
@@ -109,8 +142,27 @@ spec:
             capabilities:
               drop:
                 - ALL
+        {{- end }}
 
+      {{- if or .Values.envoy.enabled .Values.irsaRoleArn }}
       volumes:
+        {{- if .Values.envoy.enabled }}
         - name: envoy-config
           configMap:
             name: {{ include "base-service.fullname" . }}-envoy
+        {{- end }}
+        {{- if .Values.irsaRoleArn }}
+        # Projected SA token with audience sts.amazonaws.com — this is the
+        # credential sts:AssumeRoleWithWebIdentity actually validates, against
+        # the cluster's OIDC discovery bucket (see terraform/cluster/oidc.tf).
+        # Kubelet rotates it; expirationSeconds is the rotation floor.
+        - name: aws-iam-token
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  audience: sts.amazonaws.com
+                  expirationSeconds: 86400
+                  path: token
+        {{- end }}
+      {{- end }}

@@ -32,3 +32,14 @@ variable "tags" {
   type    = map(string)
   default = {}
 }
+
+variable "backend" {
+  description = "Where to store the values: \"ssm\" (Parameter Store, free) or \"secretsmanager\" ($0.40/secret/month). See the platform root's secrets_backend variable."
+  type        = string
+  default     = "ssm"
+
+  validation {
+    condition     = contains(["ssm", "secretsmanager"], var.backend)
+    error_message = "backend must be \"ssm\" or \"secretsmanager\"."
+  }
+}

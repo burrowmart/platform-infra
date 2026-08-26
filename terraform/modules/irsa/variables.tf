@@ -1,10 +1,10 @@
 variable "oidc_provider_arn" {
-  description = "ARN of the EKS cluster's IAM OIDC identity provider."
+  description = "ARN of the cluster's IAM OIDC identity provider. On EKS that is the managed one; on this k3s cluster it is registered against the API server's own signing key (terraform/cluster/oidc.tf). The module is identical either way."
   type        = string
 }
 
 variable "oidc_provider_url" {
-  description = "Issuer URL of the EKS cluster's OIDC provider (with https://), e.g. data.aws_eks_cluster.this.identity[0].oidc[0].issuer."
+  description = "Service-account token issuer URL (with https://) — terraform/cluster output oidc_provider_url."
   type        = string
 }
 
@@ -38,4 +38,15 @@ variable "aws_account_id" {
 variable "tags" {
   type    = map(string)
   default = {}
+}
+
+variable "secrets_backend" {
+  description = "Must match the secrets module's `backend`: \"ssm\" or \"secretsmanager\". Determines which read permissions each IRSA role gets."
+  type        = string
+  default     = "ssm"
+
+  validation {
+    condition     = contains(["ssm", "secretsmanager"], var.secrets_backend)
+    error_message = "secrets_backend must be \"ssm\" or \"secretsmanager\"."
+  }
 }

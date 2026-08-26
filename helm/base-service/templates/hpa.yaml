@@ -1,3 +1,5 @@
+{{- /* Needs metrics-server, and means nothing on a single-node laptop cluster. */ -}}
+{{- if .Values.autoscaling.enabled }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -19,3 +21,4 @@ spec:
           type: Utilization
           # Scale up when average CPU across pods exceeds this threshold
           averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

@@ -1,3 +1,8 @@
+{{- /*
+Off locally: there is no Cloudflare Tunnel and no nginx-internal class on a
+laptop cluster — reach the service with `kubectl port-forward` instead.
+*/ -}}
+{{- if .Values.ingress.enabled }}
 {{/*
 .Values.ingress.annotations (default {}) is merged over these defaults —
 via `merge` rather than appending raw lines — so a key like proxy-read-timeout
@@ -22,7 +27,7 @@ metadata:
 spec:
   # nginx-internal is the cluster-internal nginx ingress class reached only via
   # the Cloudflare Tunnel (cloudflared namespace). No public inbound exists.
-  ingressClassName: nginx-internal
+  ingressClassName: {{ .Values.ingress.className }}
   rules:
     - host: {{ .Values.ingress.host | quote }}
       http:
@@ -34,3 +39,4 @@ spec:
                 name: {{ include "base-service.fullname" . }}
                 port:
                   number: {{ .Values.service.port }}
+{{- end }}

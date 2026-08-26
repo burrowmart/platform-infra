@@ -1,3 +1,8 @@
+{{- /*
+Off locally: with replicaCount 1, a minAvailable of 1 blocks the eviction
+that a rolling update needs, and `helm upgrade` hangs instead of failing.
+*/ -}}
+{{- if .Values.podDisruptionBudget.enabled }}
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
@@ -10,3 +15,4 @@ spec:
   selector:
     matchLabels:
       {{- include "base-service.selectorLabels" . | nindent 6 }}
+{{- end }}

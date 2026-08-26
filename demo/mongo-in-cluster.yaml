@@ -1,0 +1,72 @@
+# OPTIONAL: MongoDB inside the laptop cluster.
+#
+# Only needed if you are NOT using MongoDB Atlas — offline work, or to avoid
+# putting laptop traffic through Atlas's IP allowlist. Atlas M0 is the
+# recommended path (docs/LOCAL-DEPLOYMENT.md step 4): free, a real replica set,
+# and the same store the AWS deployment uses.
+#
+#   kubectl apply -f platform-infra/demo/mongo-in-cluster.yaml
+#
+# Costs roughly 1 GB of whatever memory Docker Desktop has been given.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: data
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: mongo }
+  template:
+    metadata:
+      labels: { app: mongo }
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7
+          args: ["--replSet", "rs0", "--bind_ip_all"]
+          ports: [{ containerPort: 27017 }]
+          env:
+            # The Service DNS name (mongo.data.svc.cluster.local) can't be
+            # used as the replica-set member host here: kube-proxy only
+            # routes a Service to pods already marked Ready, so a pod trying
+            # to reach itself through the Service during its OWN readiness
+            # probe (which is what determines readiness) gets connection
+            # refused — a chicken-and-egg problem. rs.initiate()'s "isSelf"
+            # check confirmed this by failing with exactly that. The pod's
+            # own IP has no such bootstrapping problem, at the cost of not
+            # surviving a pod reschedule — acceptable for this demo, where
+            # there's exactly one mongo pod for the cluster's lifetime.
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - >-
+                  mongosh --quiet --eval
+                  "try { var s=rs.status(); if(s.myState===1) quit(0); quit(1); }
+                  catch(e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'$MY_POD_IP:27017'}]}); quit(1); }"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 10
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: "1",  memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: data
+spec:
+  selector: { app: mongo }
+  ports: [{ port: 27017, targetPort: 27017 }]

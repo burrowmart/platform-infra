@@ -21,26 +21,22 @@ variable "role_name_prefix" {
   default     = "github-oidc-deploy"
 }
 
-variable "eks_cluster_name" {
-  description = "EKS cluster the deploy role gets `eks:DescribeCluster` + Kubernetes API access on."
+variable "cluster_instance_id" {
+  description = "EC2 instance id of the k3s node. Scopes the ssm:StartSession port-forward permission to exactly that one host."
   type        = string
 }
 
-variable "eks_cluster_arn" {
-  description = "ARN of the EKS cluster, for the IAM policy resource constraint."
+variable "kubeconfig_parameter_name" {
+  description = "SSM parameter holding the cluster kubeconfig. The deploy role gets ssm:GetParameter on this one path only."
   type        = string
 }
 
-variable "eks_access_policy_arn" {
-  description = <<-EOT
-    AWS-managed EKS access policy granted to the deploy role, cluster-scoped.
-    Defaults to AmazonEKSEditPolicy (create/update/delete workloads, no RBAC
-    or node-group admin) rather than the Admin/ClusterAdmin policies — CI
-    creates a namespace per service (helm --create-namespace) so this can't
-    be pinned to specific namespaces up front.
-  EOT
-  type        = string
-  default     = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+variable "aws_region" {
+  type = string
+}
+
+variable "aws_account_id" {
+  type = string
 }
 
 variable "tags" {

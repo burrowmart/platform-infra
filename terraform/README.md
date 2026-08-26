@@ -1,121 +1,162 @@
 # platform-infra/terraform
 
-Terraform for everything that sits *around* the EKS cluster: the Cloudflare
-Tunnel that's the cluster's only inbound path, the internal ingress
-controller behind it, CI's AWS identity, IRSA roles, Secrets Manager
-entries, and the OPA bundle bucket.
+Two Terraform roots that stand up the archtenet demo cluster and everything
+around it. This replaces the `eksctl create cluster` step entirely — there is
+no eksctl anywhere in this repo, and no EKS.
 
-**The EKS cluster itself is not created here.** It's looked up by name
-(`data "aws_eks_cluster" "this"` in [data.tf](data.tf)) and assumed to
-already exist. Every resource in this tree wires *around* that cluster —
-none of it provisions the cluster, its node groups, or its VPC.
-
-## The invariant
-
-> **The Cloudflare Tunnel is the only path into the cluster.**
-
-No `LoadBalancer` Service, no `NodePort` Service, no `aws_lb`/ALB/NLB, no
-public listener anywhere in this tree. `cloudflared` (3 replicas, namespace
-`cloudflared`) dials **out** to the Cloudflare edge; it has no
-`kubernetes_service` in front of it because there is nothing to expose —
-inbound traffic arrives at the edge, rides the tunnel in, and lands on the
-internal nginx ingress controller's `ClusterIP` Service
-(`ingress-nginx-internal.ingress.svc`). Every other Service in the cluster
-(created by each service's own Helm chart, outside this repo) is
-`ClusterIP`-only and reachable only through that ingress.
-
-Grep-provable — see [Verification](#verification) below.
-
-## Module map
-
-| Module | Creates | ARCHITECTURE.md section |
-|---|---|---|
-| [`modules/internal-ingress`](modules/internal-ingress) | ingress-nginx via `helm_release`, `ClusterIP` controller Service named `ingress-nginx-internal` in namespace `ingress`, `IngressClass` `nginx-internal` | Private networking |
-| [`modules/cloudflare-tunnel`](modules/cloudflare-tunnel) | `cloudflare_zero_trust_tunnel_cloudflared`, one DNS CNAME per public hostname, and the k8s side: namespace `cloudflared`, credentials Secret, config ConfigMap (`localConfig.ingress`), Deployment (3 replicas, outbound-only, no Service) | Private networking |
-| [`modules/github-oidc`](modules/github-oidc) | GitHub Actions OIDC provider + one assume-role per repo pattern (`repo:{owner}/*:ref:refs/heads/main`), `eks:DescribeCluster` only, an EKS access entry + `AmazonEKSEditPolicy` association for the actual kubectl/helm deploy permissions. No ECR permissions — images are on ghcr.io. | Secrets & CI auth |
-| [`modules/irsa`](modules/irsa) | Reusable: one IAM role per service, trust-scoped to that service's `namespace`/`ServiceAccount` via the EKS cluster's own OIDC provider, with a Secrets Manager read policy scoped to `svc/{service}/*` | Secrets & CI auth |
-| [`modules/secrets`](modules/secrets) | Secrets Manager entries per service — `mongo-uri`, `rabbit-url`, `redis-url`, `cognito-issuer`, `cognito-audience` — values sourced from a sensitive variable, never a literal in `.tf` source | Secrets & CI auth |
-| [`modules/opa-bundle-bucket`](modules/opa-bundle-bucket) | Versioned, private S3 bucket for OPA bundles; a write-only role for the `opa-policies` repo's CI (GitHub OIDC); a read-only role for the OPA PDP DaemonSet (EKS IRSA) | Auth & Authz (OPA bundle source) |
-
-Root [`main.tf`](main.tf) also creates the EKS cluster's IAM OIDC identity
-provider (`aws_iam_openid_connect_provider.eks`) — a prerequisite for IRSA
-that isn't part of "the cluster" itself, so it lives here rather than in the
-cluster's own provisioning.
-
-## Plan / apply
-
-```bash
-cd platform-infra/terraform
-terraform init
-
-cp terraform.tfvars.example terraform.tfvars   # then fill it in
-export TF_VAR_cloudflare_api_token="..."       # never in a tfvars file
-# real secret values (mongo/rabbit/redis URIs, Cognito issuer/audience) go
-# in a gitignored secrets.auto.tfvars or TF_VAR_secret_values — see the
-# comment at the bottom of terraform.tfvars.example
-
-terraform plan  -out=tfplan
-terraform apply tfplan
+```
+cluster/    single-node k3s on a spot EC2 instance, plus the S3 OIDC
+            discovery bucket that makes IRSA work without EKS
+platform/   ingress-nginx, the Cloudflare Tunnel, IRSA roles, service
+            secrets, the OPA bundle bucket
+modules/    shared modules, used by platform/
 ```
 
-Requires:
-- AWS credentials for `aws_account_id` (the deploy role or your own,
-  sufficient for `eks:DescribeCluster`, IAM, S3, Secrets Manager)
-- Network + auth access to the target EKS cluster's API server
-- A Cloudflare API token scoped to `Tunnel:Edit` + `DNS:Edit` on the zone
-  in `cloudflare_zone_id`
-
-### Required variables with no default
-
-`aws_region`, `aws_account_id`, `eks_cluster_name`, `cloudflare_account_id`,
-`cloudflare_api_token`, `cloudflare_zone_id`, `github_owner`,
-`opa_bundle_bucket_name`. Everything else has a default matching the system
-map in the top-level `platform-infra/README.md` — override what differs for
-your environment. Full list with descriptions: [variables.tf](variables.tf).
-
-## Verification
+**Перший раз?** Не починай звідси. Порядок:
+[docs/LOCAL-DEPLOYMENT.md](../docs/LOCAL-DEPLOYMENT.md) (Kubernetes на
+ноутбуці, $0) → [docs/AWS-GETTING-STARTED.md](../docs/AWS-GETTING-STARTED.md)
+(акаунт AWS і цей кластер, покроково) →
+[docs/AWS-DEPLOYMENT.md](../docs/AWS-DEPLOYMENT.md) (решта платформи).
+Нижче — короткий варіант для тих, хто вже знає, що робить.
 
 ```bash
-terraform init -backend=false
-terraform validate
-terraform plan -var-file=terraform.tfvars.example   # or your real tfvars
+cp cluster/terraform.tfvars.example  cluster/terraform.tfvars    # fill in
+cp platform/terraform.tfvars.example platform/terraform.tfvars   # fill in
+export TF_VAR_cloudflare_api_token="..."
+
+make cluster-init platform-init
+make up            # cluster, then platform
+make help          # everything else
 ```
 
-`init` and `validate` need no credentials and are the two gates that run
-anywhere, including this repo's CI. `plan` additionally needs live AWS
-credentials (for the `data "aws_eks_cluster"` lookup and every resource's
-provider) and a reachable Cloudflare account — it cannot complete against
-placeholder credentials, since a data source read is a real API call, not
-something Terraform can fake locally. What `validate` guarantees regardless:
-every reference, type, `for_each`, and provider config in the tree is
-internally consistent.
+## Why two roots
 
-Grep for the invariants — all four should return **no matches** anywhere
-under this directory:
+The `kubernetes` and `helm` providers in `platform/` are configured from the
+cluster's kubeconfig. Terraform must be able to configure a provider *before*
+it can plan the resources that use it, so a provider config that depends on a
+resource created in the same apply fails with "configuration depends on values
+that cannot be determined until apply". Creating the cluster and installing
+into it are therefore two applies, in order. `make up` runs both.
+
+`cluster/` blocks until the node has finished bootstrapping and published its
+kubeconfig, so `platform/` never runs against a cluster that isn't there yet.
+
+## What it costs
+
+The command this replaced —
+
+```
+eksctl create cluster --node-type t3.medium --nodes 2 --node-private-networking
+```
+
+— bills roughly **$165/month**: $73 for the EKS control plane (fixed, no free
+tier, cannot be switched off), ~$33 for the NAT Gateway that
+`--node-private-networking` forces, ~$60 for two on-demand t3.medium nodes.
+
+What's here instead, running 24/7 in eu-central-1:
+
+| | |
+|---|---:|
+| t3.large **spot** (8 GiB) | ~$18 |
+| Elastic IP | ~$3.60 |
+| 40 GiB gp3 root volume | ~$3.20 |
+| VPC, S3 OIDC bucket, SSM Parameter Store, IAM | ~$0 |
+| **Total** | **~$25/month** |
+
+`make stop` between demos drops that to the EBS volume and the Elastic IP —
+**~$7/month** — with every workload, PVC and image intact on restart.
+`t3.medium` instead of `t3.large` roughly halves the compute line, but only if
+you run one replica per service and skip the observability stack.
+
+Three cost decisions are worth naming, because each was a real line item:
+
+- **No NAT Gateway.** The node sits in a public subnet with an Elastic IP.
+  That is not a security regression here: the security group has *zero*
+  inbound rules, every Service is `ClusterIP`, and traffic arrives through
+  the Cloudflare Tunnel's outbound-only connection. A NAT Gateway would have
+  bought nothing but a bill.
+- **SSM Parameter Store, not Secrets Manager** (`secrets_backend` in
+  `platform/`). Secrets Manager is $0.40 per secret per month; this tree
+  creates 5 keys x 12 services = 60 secrets, so ~$24/month — more than the
+  cluster. Parameter Store Standard tier is free and External Secrets
+  Operator reads it natively.
+- **Spot with `interruption_behavior = "stop"`, persistent request.** When
+  AWS reclaims capacity it stops the node instead of terminating it, and
+  starts it again when capacity returns. The EBS root volume — and therefore
+  the whole cluster — survives. A `terminate` behaviour would wipe it.
+
+  The cost of that choice: a *persistent* request is the only kind AWS lets
+  you pair with `stop`, and a persistent request that outlives its instance
+  relaunches one. `make down` runs `make check-orphans` afterwards to list
+  any request still `open`/`active`, so a destroyed cluster cannot quietly
+  start billing again. Run `make check-orphans` yourself if you ever destroy
+  by hand. Set `use_spot = false` to avoid the whole question at ~3x the
+  compute cost.
+
+## What changed versus the EKS design, and what didn't
+
+**Unchanged.** The Cloudflare Tunnel is still the only inbound path. Every
+Service is still `ClusterIP`. IRSA still works, per service, with no static
+AWS credentials anywhere — `modules/irsa` is byte-for-byte the same module it
+was on EKS. Helm charts, the OPA PDP, the Envoy PEP sidecars, and the reusable
+CI workflow all keep their shape.
+
+**IRSA without EKS.** EKS's whole IRSA mechanism rests on it publishing an
+OIDC discovery endpoint for the API server's service-account signing key. k3s
+has the same key and publishes nothing, so `cluster/` publishes it: the API
+server is started with `service-account-issuer` pointing at a public S3
+bucket, and the bootstrap script copies the API server's own JWKS
+(`kubectl get --raw /openid/v1/jwks`) into it. STS cannot tell the difference.
+The bucket is public on purpose — it holds a public key and nothing else.
+
+There is no EKS pod-identity webhook to inject `AWS_ROLE_ARN` and the
+projected token, so the `base-service` Helm chart does that itself whenever
+`irsaRoleArn` is set. Service code is untouched: the AWS SDK's default
+credential chain picks the env vars up exactly as it did on EKS.
+
+**API access moved to an SSM tunnel.** No `aws eks update-kubeconfig`, and no
+inbound rule on 6443. The kubeconfig lives in an SSM `SecureString`; humans
+and CI both fetch it and open an `AWS-StartPortForwardingSession` to the node.
+`make tunnel` does this locally; the deploy job in
+`.github/workflows/service-ci.yml` does it on the runner.
+
+**Honest downgrades.** These are real, and worth knowing before this pattern
+goes anywhere near production:
+
+- One node, no HA. The control plane, every workload, and all PVC data are on
+  a single spot instance. A spot reclaim is a full outage until AWS returns
+  capacity; a disk failure is total data loss.
+- The CI deploy role authenticates as k3s cluster-admin. EKS access policies
+  gave finer-grained scoping (`AmazonEKSEditPolicy`) that k3s has no
+  equivalent for. IAM still constrains which principal can fetch the
+  credential and which one instance it can tunnel to.
+- `HorizontalPodAutoscaler` and `PodDisruptionBudget` resources still render,
+  but mean very little on a single node.
+
+## Prerequisites
+
+- Terraform >= 1.6
+- AWS credentials for the target account
+- The [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html):
+  `brew install --cask session-manager-plugin`
+- A Cloudflare API token with `Tunnel:Edit` + `DNS:Edit` on the target zone
+
+## Verifying the invariants
+
+All of these should return **no matches**:
 
 ```bash
-grep -rn "LoadBalancer"        --include='*.tf' .
-grep -rn "NodePort"            --include='*.tf' .
-grep -rn "aws_lb"              --include='*.tf' .
-grep -rEn "AKIA[0-9A-Z]{16}"   --include='*.tf' .   # static AWS access keys
+grep -rn "LoadBalancer"      --include='*.tf' .
+grep -rn "NodePort"          --include='*.tf' .
+grep -rn "aws_lb"            --include='*.tf' .
+grep -rEn "AKIA[0-9A-Z]{16}" --include='*.tf' .
 ```
 
-## Design notes
+And the one inbound rule that could exist should not:
 
-- **No `aws_caller_identity`/`aws_region` data sources.** `aws_account_id`
-  and `aws_region` are required input variables instead, so an `apply`
-  against the wrong account fails at variable validation, not partway
-  through a diff.
-- **`thumbprint_list` is omitted** on both `aws_iam_openid_connect_provider`
-  resources (GitHub's and the EKS cluster's). Since AWS provider ~5.10 it's
-  optional+computed — the provider derives and keeps it current itself,
-  which matters because these upstream TLS chains do rotate.
-- **State contains secret values in plaintext** (`modules/secrets`) — an
-  inherent Terraform limitation, not something this tree works around. Use
-  an encrypted remote backend with restricted read access; don't rely on
-  `sensitive = true` for anything beyond keeping values out of CLI output.
-- **`AmazonEKSEditPolicy` is cluster-scoped, not namespace-scoped**, for the
-  CI deploy role. Each service's CI creates its own namespace on first
-  deploy (`helm upgrade --install --create-namespace`), which a
-  namespace-scoped access entry can't pre-authorize. `Edit` (not `Admin`)
-  still excludes RBAC and node-level changes.
+```bash
+cd cluster && terraform output -json 2>/dev/null
+aws ec2 describe-security-groups \
+  --filters "Name=group-name,Values=archtenet-demo-node" \
+  --query 'SecurityGroups[0].IpPermissions'   # => []
+```

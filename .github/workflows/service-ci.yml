@@ -209,7 +209,14 @@ jobs:
           snyk container test "$IMAGE_REF" --severity-threshold=high
 
   # ---------------------------------------------------------------------------
-  # 6. Deploy — GitHub OIDC → AWS assume-role → update-kubeconfig → helm upgrade
+  # 6. Deploy — GitHub OIDC → AWS assume-role → SSM port-forward → helm upgrade
+  #
+  # The cluster is a single-node k3s box with NO inbound security-group rules
+  # (terraform/cluster). So instead of `aws eks update-kubeconfig`, the runner
+  # pulls the kubeconfig out of SSM Parameter Store and opens a Session
+  # Manager port-forward to 6443 on the node. The kubeconfig points at
+  # 127.0.0.1:6443, which is exactly where the tunnel lands.
+  #
   # No static AWS keys; role trust policy must allow the calling repo's OIDC subject.
   # ---------------------------------------------------------------------------
   deploy:
@@ -228,12 +235,43 @@ jobs:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: Configure kubectl for EKS
-        env:
-          CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
+      - name: Install the Session Manager plugin
         run: |
-          aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$AWS_REGION"
+          curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+            -o /tmp/session-manager-plugin.deb
+          sudo dpkg -i /tmp/session-manager-plugin.deb
+
+      - name: Fetch kubeconfig and open a tunnel to the API server
+        env:
+          KUBECONFIG_PARAM: ${{ vars.KUBECONFIG_PARAM }}
+          K3S_INSTANCE_ID: ${{ vars.K3S_INSTANCE_ID }}
+        run: |
+          umask 077
+          aws ssm get-parameter \
+            --name "$KUBECONFIG_PARAM" \
+            --with-decryption \
+            --query Parameter.Value \
+            --output text > "$HOME/.kube-config"
+          echo "KUBECONFIG=$HOME/.kube-config" >> "$GITHUB_ENV"
+
+          # Backgrounded for the rest of the job; the runner is torn down
+          # afterwards, which ends the session.
+          aws ssm start-session \
+            --target "$K3S_INSTANCE_ID" \
+            --document-name AWS-StartPortForwardingSession \
+            --parameters '{"portNumber":["6443"],"localPortNumber":["6443"]}' &
+
+          for i in $(seq 1 30); do
+            if timeout 2 bash -c "</dev/tcp/127.0.0.1/6443" 2>/dev/null; then
+              echo "tunnel up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "SSM port-forward to the API server never came up" >&2
+          exit 1
+
+      - name: Verify cluster reachability
+        run: kubectl version
 
       - name: Install Helm
         uses: azure/setup-helm@v4

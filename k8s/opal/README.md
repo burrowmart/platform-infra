@@ -19,5 +19,5 @@ Runs the workloads described in `opa-policies/opal/README.md`. Namespace is
 For the demo, `client-token` and `master-token` are set to the **same**
 value — OPAL treats the master token as an all-access credential, so this is
 a supported simplification, not a bug. A real deployment would mint scoped
-per-peer tokens via OPAL's `POST /token` instead. See `../../../demo/run-demo.sh`
+per-peer tokens via OPAL's `POST /token` instead. See `../../demo/run-demo.sh` (which does NOT set this up — the local path in `../../docs/LOCAL-DEPLOYMENT.md` runs OPA without OPAL, on a static bundle)
 for how these get created.

@@ -1,0 +1,149 @@
+# ---------------------------------------------------------------------------
+# OPA PDP for a laptop cluster — the piece that lets the Envoy PEP sidecar be
+# ENABLED locally instead of switched off.
+#
+# Differences from the deployed DaemonSet in ../k8s/opa/ (and why):
+#
+#   1. Deployment, not DaemonSet — one node, so one pod either way.
+#   2. No opal-client sidecar — OPAL needs a server and a client token, which
+#      is a whole second system to stand up for no local benefit. Policy here
+#      is static: rebuild the bundle and restart the pod to change it.
+#   3. Bundle from a mounted file, not from S3. The deployed config polls
+#      s3://<bucket>/bundle.tar.gz with SigV4 signing; locally the bundle is a
+#      4 KB ConfigMap mounted at /bundle. That drops the MinIO stand-in, the
+#      credentials Secret, and the bucket-seeding step — three moving parts
+#      whose only job was to imitate S3.
+#
+# What is NOT simplified: the policy itself. This runs the real
+# opa-policies/bundle, the real envoy_ext_authz_grpc plugin on :9191, and the
+# real JWT signature verification against the bundle's demo JWKS. Envoy's
+# ext_authz calls get genuine allow/deny decisions.
+#
+# The bundle ConfigMap is created from the built tarball, not committed — see
+# docs/LOCAL-DEPLOYMENT.md:
+#
+#   cd opa-policies && make build
+#   kubectl create configmap opa-bundle -n opa-system \
+#     --from-file=bundle.tar.gz=dist/bundle.tar.gz \
+#     --dry-run=client -o yaml | kubectl apply -f -
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: opa-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opa-config
+  namespace: opa-system
+data:
+  config.yaml: |
+    # No `services:`/`bundles:` block — the bundle is passed as a file
+    # argument instead, so there is nothing to poll and nothing to sign.
+
+    # Every authorization decision printed to stdout. This is the single most
+    # useful thing about running OPA locally: `kubectl logs` shows exactly
+    # why a request was allowed or denied.
+    decision_logs:
+      console: true
+
+    status:
+      console: false
+
+    plugins:
+      envoy_ext_authz_grpc:
+        addr: :9191
+        # Matches package envoy.authz / rule allow in opa-policies/bundle/envoy.rego,
+        # and the base-service chart's Envoy ext_authz cluster target.
+        query: data.envoy.authz.allow
+        dry-run: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa-pdp
+  namespace: opa-system
+  labels:
+    app: opa-pdp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opa-pdp
+  template:
+    metadata:
+      labels:
+        app: opa-pdp
+    spec:
+      containers:
+        - name: opa
+          # -envoy-static: the plain openpolicyagent/opa image does not
+          # register the envoy_ext_authz_grpc plugin and fails fast with
+          # "plugin not registered"; -static also has an arm64 build, which
+          # an Apple Silicon laptop needs.
+          image: openpolicyagent/opa:1.19.0-envoy-static
+          args:
+            - run
+            - --server
+            - --config-file=/config/config.yaml
+            - --addr=0.0.0.0:8181
+            - --log-level=info
+            - /bundle/bundle.tar.gz
+          ports:
+            - name: rest-api
+              containerPort: 8181
+              protocol: TCP
+            - name: ext-authz-grpc
+              containerPort: 9191
+              protocol: TCP
+          volumeMounts:
+            - name: opa-config
+              mountPath: /config
+              readOnly: true
+            - name: opa-bundle
+              mountPath: /bundle
+              readOnly: true
+          readinessProbe:
+            # No ?bundles=true here: that reports on the bundle *plugin*,
+            # which is not running when the bundle comes from a file.
+            httpGet:
+              path: /health
+              port: 8181
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: opa-config
+          configMap:
+            name: opa-config
+        - name: opa-bundle
+          configMap:
+            name: opa-bundle
+---
+# Same name/namespace/ports as ../opa/service.yaml, because that is the
+# address the charts already point at:
+# opaAddress = opa-pdp.opa-system.svc.cluster.local:9191
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa-pdp
+  namespace: opa-system
+  labels:
+    app: opa-pdp
+spec:
+  selector:
+    app: opa-pdp
+  ports:
+    - name: ext-authz-grpc
+      port: 9191
+      targetPort: 9191
+    - name: rest-api
+      port: 8181
+      targetPort: 8181

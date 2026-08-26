@@ -34,7 +34,9 @@ spec:
             # Initial full sync + periodic drift-correction poll against
             # user-service's GET /internal/attributes. See
             # opa-policies/opal/data-config.template.json for the shape and
-            # ../../../demo/run-demo.sh for how __SERVICE_TOKEN__ gets filled in.
+            # __SERVICE_TOKEN__ is filled in by whatever deploys this — nothing
+            # scripts it yet. ../../demo/run-demo.sh is the laptop path and runs
+            # OPA without OPAL, so it never touches this.
             - name: OPAL_DATA_CONFIG_SOURCES
               valueFrom:
                 secretKeyRef:

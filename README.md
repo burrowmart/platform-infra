@@ -7,9 +7,16 @@ Onboarding entry point for the archtenet backend platform.
 
 ## Acceptance criteria — verified
 
-[`ACCEPTANCE.md`](./ACCEPTANCE.md) is the standing verification report for `ARCHITECTURE.md`'s six acceptance
-criteria (compensation, crash recovery, correlation, network isolation, PEP+OPA authz, notification resilience),
-generated end-to-end against this repo's own Docker Compose stack by [`acceptance/run-acceptance.ts`](./acceptance/run-acceptance.ts) — no mocks. Re-run it with:
+`ACCEPTANCE.md` is a generated verification report for `ARCHITECTURE.md`'s six acceptance
+criteria — not a committed document. It is gitignored on purpose: a checked-in report keeps
+claiming PASS after the code it verified has moved on. Regenerate it whenever you need the
+evidence (before a demo, before showing the repo to anyone):
+
+```bash
+cd acceptance && npm ci && npm run acceptance
+```
+
+The harness itself — [`acceptance/`](./acceptance) — is the thing under version control.
 
 ```bash
 cd acceptance && npm install && npm run run

@@ -33,3 +33,9 @@ variable "replica_count" {
   type        = number
   default     = 2
 }
+
+variable "controller_config" {
+  description = "Extra entries merged into the ingress-nginx controller ConfigMap. Merged over the module's own defaults, so a key set here wins."
+  type        = map(string)
+  default     = {}
+}

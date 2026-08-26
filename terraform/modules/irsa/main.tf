@@ -36,7 +36,9 @@ data "aws_iam_policy_document" "assume_role" {
 }
 
 # Referenced by each service's Helm release as `irsaRoleArn`, annotated onto
-# its ServiceAccount (eks.amazonaws.com/role-arn) by the base-service chart.
+# its ServiceAccount by the base-service chart. Since this cluster has no
+# EKS pod-identity webhook, that chart also mounts the projected
+# sts.amazonaws.com token and sets AWS_ROLE_ARN itself.
 resource "aws_iam_role" "this" {
   for_each = var.services
 
@@ -45,21 +47,62 @@ resource "aws_iam_role" "this" {
   tags               = var.tags
 }
 
+# Read scope follows the secrets module's backend. Either way a service can
+# only read its own <prefix>/<service>/* path — never another service's.
 data "aws_iam_policy_document" "secrets_read" {
   for_each = var.services
 
-  statement {
-    sid       = "ReadOwnSecretsOnly"
-    effect    = "Allow"
-    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
-    resources = ["arn:${var.aws_partition}:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${var.secrets_prefix}/${each.key}/*"]
+  dynamic "statement" {
+    for_each = var.secrets_backend == "secretsmanager" ? [1] : []
+
+    content {
+      sid       = "ReadOwnSecretsOnly"
+      effect    = "Allow"
+      actions   = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
+      resources = ["arn:${var.aws_partition}:secretsmanager:${var.aws_region}:${var.aws_account_id}:secret:${var.secrets_prefix}/${each.key}/*"]
+    }
+  }
+
+  dynamic "statement" {
+    for_each = var.secrets_backend == "ssm" ? [1] : []
+
+    content {
+      sid    = "ReadOwnParametersOnly"
+      effect = "Allow"
+      actions = [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath",
+        "ssm:DescribeParameters",
+      ]
+      resources = ["arn:${var.aws_partition}:ssm:${var.aws_region}:${var.aws_account_id}:parameter/${var.secrets_prefix}/${each.key}/*"]
+    }
+  }
+
+  # SecureString parameters are encrypted with the AWS-managed alias/aws/ssm
+  # key; reading one needs kms:Decrypt, constrained to calls made through SSM.
+  dynamic "statement" {
+    for_each = var.secrets_backend == "ssm" ? [1] : []
+
+    content {
+      sid       = "DecryptViaParameterStoreOnly"
+      effect    = "Allow"
+      actions   = ["kms:Decrypt"]
+      resources = ["*"]
+
+      condition {
+        test     = "StringEquals"
+        variable = "kms:ViaService"
+        values   = ["ssm.${var.aws_region}.amazonaws.com"]
+      }
+    }
   }
 }
 
 resource "aws_iam_role_policy" "secrets_read" {
   for_each = var.services
 
-  name   = "secrets-manager-read"
+  name   = "service-secrets-read"
   role   = aws_iam_role.this[each.key].id
   policy = data.aws_iam_policy_document.secrets_read[each.key].json
 }

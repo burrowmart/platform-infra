@@ -1,28 +1,24 @@
 # ---------------------------------------------------------------------------
-# EKS OIDC provider — required for IRSA. The cluster itself already exists
-# (see data.tf); this registers its OIDC issuer as an IAM identity provider
-# so pod ServiceAccounts can assume roles. Separate from the GitHub Actions
-# OIDC provider created inside modules.github_oidc.
+# The cluster's IAM OIDC provider is created by the ../cluster root (it has to
+# be: it is registered against the k3s API server's own service-account
+# signing key, published to a public S3 discovery bucket). This root just
+# consumes it — see data.tf. Nothing about modules/irsa changed in the move
+# off EKS; it still just needs an OIDC provider ARN and issuer URL.
 # ---------------------------------------------------------------------------
-resource "aws_iam_openid_connect_provider" "eks" {
-  url            = data.aws_eks_cluster.this.identity[0].oidc[0].issuer
-  client_id_list = ["sts.amazonaws.com"]
-  # thumbprint_list intentionally omitted — provider-managed.
-}
 
 # ---------------------------------------------------------------------------
 # Private networking — the only path into the cluster
 # ---------------------------------------------------------------------------
 
 module "internal_ingress" {
-  source = "./modules/internal-ingress"
+  source = "../modules/internal-ingress"
 
   namespace          = var.ingress_namespace
   ingress_class_name = var.ingress_class_name
 }
 
 module "cloudflare_tunnel" {
-  source = "./modules/cloudflare-tunnel"
+  source = "../modules/cloudflare-tunnel"
 
   cloudflare_account_id        = var.cloudflare_account_id
   cloudflare_zone_id           = var.cloudflare_zone_id
@@ -39,22 +35,30 @@ module "cloudflare_tunnel" {
 # ---------------------------------------------------------------------------
 
 module "github_oidc" {
-  source = "./modules/github-oidc"
+  source = "../modules/github-oidc"
 
-  github_owner     = var.github_owner
-  repo_patterns    = var.github_repo_patterns
-  eks_cluster_name = var.eks_cluster_name
-  eks_cluster_arn  = data.aws_eks_cluster.this.arn
-  tags             = var.tags
+  github_owner  = var.github_owner
+  repo_patterns = var.github_repo_patterns
+
+  # CI reaches the API server the same way a human does: read the kubeconfig
+  # from SSM, then port-forward 6443 over a Session Manager session. No EKS
+  # access entries, no inbound security-group rule.
+  cluster_instance_id       = local.cluster_instance_id
+  kubeconfig_parameter_name = data.terraform_remote_state.cluster.outputs.kubeconfig_parameter_name
+  aws_region                = var.aws_region
+  aws_account_id            = var.aws_account_id
+
+  tags = var.tags
 }
 
 module "irsa" {
-  source = "./modules/irsa"
+  source = "../modules/irsa"
 
-  oidc_provider_arn = aws_iam_openid_connect_provider.eks.arn
-  oidc_provider_url = aws_iam_openid_connect_provider.eks.url
+  oidc_provider_arn = local.cluster_oidc_provider_arn
+  oidc_provider_url = local.cluster_oidc_provider_url
   services          = var.domain_services
   secrets_prefix    = var.secrets_prefix
+  secrets_backend   = var.secrets_backend
   aws_region        = var.aws_region
   aws_account_id    = var.aws_account_id
   aws_partition     = var.aws_partition
@@ -62,26 +66,27 @@ module "irsa" {
 }
 
 module "secrets" {
-  source = "./modules/secrets"
+  source = "../modules/secrets"
 
   services       = toset(keys(var.domain_services))
   secrets_prefix = var.secrets_prefix
   secret_values  = var.secret_values
+  backend        = var.secrets_backend
   tags           = var.tags
 }
 
 module "opa_bundle_bucket" {
-  source = "./modules/opa-bundle-bucket"
+  source = "../modules/opa-bundle-bucket"
 
   bucket_name = var.opa_bundle_bucket_name
 
   github_oidc_provider_arn = module.github_oidc.oidc_provider_arn
   opa_policies_repo        = coalesce(var.opa_policies_repo, "${var.github_owner}/opa-policies")
 
-  eks_oidc_provider_arn = aws_iam_openid_connect_provider.eks.arn
-  eks_oidc_provider_url = aws_iam_openid_connect_provider.eks.url
-  opa_namespace         = var.opa_namespace
-  opa_service_account   = var.opa_service_account
+  cluster_oidc_provider_arn = local.cluster_oidc_provider_arn
+  cluster_oidc_provider_url = local.cluster_oidc_provider_url
+  opa_namespace             = var.opa_namespace
+  opa_service_account       = var.opa_service_account
 
   tags = var.tags
 }
