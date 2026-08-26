@@ -305,7 +305,27 @@ kubectl get ingressclass
 
 ---
 
-## Крок 7. Зібрати образ ОДНОГО сервісу
+## Крок 7. Зібрати спільний Helm-чарт
+
+Усі 12 сервісів успадковують один базовий чарт — `platform-infra/helm/base-service`.
+Helm **не** підтягує його під час встановлення: він бере те, що вже лежить у
+`<сервіс>/helm/charts/`. Ця тека в `.gitignore`, бо це збірковий артефакт.
+
+```bash
+cd /Users/ajjya/Projects/archtenet/backend
+./platform-infra/scripts/vendor-base-chart.sh
+```
+
+Запускай це **щоразу після зміни `base-service`** — інакше твої правки просто
+не потраплять у жоден сервіс, мовчки й без помилки.
+
+> У CI інакше: там кожен сервіс лежить у власному репозиторії, сусідньої
+> `platform-infra` поруч немає, тому CI робить `helm dependency update` і
+> тягне опублікований чарт із `ghcr.io/burrowmart/charts`.
+
+---
+
+## Крок 8. Зібрати образ ОДНОГО сервісу
 
 Не всіх одразу. Спершу один — щоб коли зламається, було зрозуміло, де саме.
 
@@ -328,7 +348,7 @@ docker images | grep user-service
 
 ---
 
-## Крок 8. Завантажити образ у кластер
+## Крок 9. Завантажити образ у кластер
 
 ```bash
 kind load docker-image user-service:local --name archtenet
@@ -342,7 +362,7 @@ Docker напряму. `kind load` копіює образ усередину.
 
 ---
 
-## Крок 9. Встановити сервіс
+## Крок 10. Встановити сервіс
 
 Спершу секрет із адресою бази саме для цього сервісу:
 
@@ -393,7 +413,7 @@ helm template user-service ./user-service/helm \
 
 ---
 
-## Крок 10. Перевірити, що сервіс живий
+## Крок 11. Перевірити, що сервіс живий
 
 ```bash
 kubectl get pods -n local
@@ -407,7 +427,7 @@ kubectl get pods -n local
 | `Running` + `READY 2/2` | Усе добре — два контейнери: `app` і `envoy-pep` |
 | `Running` + `READY 1/2` | Сайдкар Envoy не піднявся — див. крок 5 (OPA) |
 | `CrashLoopBackOff` | Стартує і падає по колу → дивись логи |
-| `ErrImageNeverPull` | Забула `kind load` (крок 8) |
+| `ErrImageNeverPull` | Забула `kind load` (крок 9) |
 | `Pending` | Не вистачає пам'яті на ноді |
 
 Логи — головний інструмент:
@@ -514,7 +534,7 @@ kubectl logs -n opa-system deploy/opa-pdp --tail=20
 
 ---
 
-## Крок 11. Решта сервісів
+## Крок 12. Решта сервісів
 
 Тепер, коли один сервіс точно працює, повторювати ті самі чотири команди 11
 разів немає сенсу:
@@ -543,7 +563,7 @@ kubectl get pods -n local
 
 ---
 
-## Крок 12. Подивитись, що всередині
+## Крок 13. Подивитись, що всередині
 
 Це найкорисніша частина — саме тут архітектура стає видимою.
 
@@ -603,6 +623,8 @@ kubectl describe pod -n local -l app.kubernetes.io/name=user-service
 | `CrashLoopBackOff`, у логах `ECONNREFUSED` до rabbitmq | RabbitMQ ще стартує (він повільний) | Зачекай 2 хв, под перезапуститься сам |
 | `Pending`, `Insufficient memory` | Мало пам'яті в Docker | Docker Desktop → Resources → 8 GB+, або став менше сервісів |
 | `no matches for kind "ExternalSecret"` | Оверлей `values-local.yaml` не підхопився | Перевір шлях у `-f` |
+| `found in Chart.yaml, but missing in charts/ directory` | Не запущено вендоринг базового чарта | `./platform-infra/scripts/vendor-base-chart.sh` (крок 7) |
+| Зміни в `base-service` ніяк не вплинули | Те саме — у `charts/` лежить стара копія | Той самий скрипт, потім `helm upgrade` |
 | `OOMKilled` | Поду не вистачило ліміту пам'яті | Те саме, що `Pending` |
 | `curl: connection refused` на 8081 | Кластер створено без `--config demo/kind-config.yaml` | `kind delete cluster --name archtenet` і створити заново з конфігом (крок 2) |
 | `403` з `server: envoy` на 8080 | Чужий процес на порту — саме тому ingress на 8081 | Нічого, використовуй 8081 |
@@ -622,7 +644,7 @@ kubectl get events -n local --sort-by=.lastTimestamp
 
 ---
 
-## Крок 13. Прибрати за собою
+## Крок 14. Прибрати за собою
 
 Зупинити все, залишивши кластер:
 

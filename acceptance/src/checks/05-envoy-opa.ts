@@ -43,6 +43,12 @@ const SERVICES = [
   'ws-gateway',
 ];
 
+// NOTE: `helm template` does not resolve chart dependencies — it renders
+// whatever is already in <chart>/charts/. That directory is gitignored (the
+// packaged base-service is a build artifact), so
+// platform-infra/scripts/vendor-base-chart.sh must have been run first, or
+// every render below fails with "found in Chart.yaml, but missing in charts/".
+// runAcceptance() invokes it; see the call site.
 async function renderChart(service: string): Promise<{ service: string; yaml: string; ok: boolean }> {
   const chartDir = path.join(BACKEND_ROOT, service, 'helm');
   const res = await sh('helm', ['template', service, chartDir], { cwd: PLATFORM_INFRA, timeoutMs: 30_000 });

@@ -27,10 +27,12 @@ cloudflare_zone_id    = "0123456789abcdef0123456789abcdef"
 base_domain = "internal.archtenet.com"
 tunnel_name = "archtenet-internal"
 
-github_owner = "archtenet"
-# github_repo_patterns defaults to ["archtenet/*"] on refs/heads/main if left unset.
+# The GitHub org that owns every service repo — this is what the deploy
+# role's OIDC trust condition is scoped to. Must match your actual org.
+github_owner = "burrowmart"
+# github_repo_patterns defaults to ["burrowmart/*"] on refs/heads/main if left unset.
 
-opa_bundle_bucket_name = "archtenet-opa-bundles-111122223333"
+opa_bundle_bucket_name = "burrowmart-opa-bundles-111122223333"
 
 tags = {
   Project     = "archtenet"

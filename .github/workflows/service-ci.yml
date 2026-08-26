@@ -278,6 +278,19 @@ jobs:
         with:
           version: "v3.16.0"
 
+      # helm/charts/ is gitignored — the base-service dependency is resolved
+      # here, from the OCI artifact platform-infra publishes. Without this
+      # step `helm upgrade` fails with "found in Chart.yaml, but missing in
+      # charts/ directory".
+      - name: Resolve chart dependencies
+        env:
+          HELM_PATH: ${{ inputs.helm-path }}
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+          helm dependency update "$HELM_PATH"
+          helm dependency list "$HELM_PATH"
+
       - name: Helm upgrade --install
         env:
           SERVICE_NAME: ${{ inputs.service-name }}

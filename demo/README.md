@@ -15,7 +15,12 @@ Run it all at once: `./run-demo.sh`.
 | `platform-secret.yaml` | `REDIS_URL` / `RABBITMQ_URL` — the local stand-in for what External Secrets Operator syncs out of AWS |
 | `opa.yaml` | The OPA PDP the Envoy sidecars call. Real policy bundle, real ext_authz, real JWT verification — only the bundle *delivery* is simplified (ConfigMap, not S3) |
 | `values-local.yaml` | Helm overlay applied to every service chart. Switches off what a laptop cannot provide (ESO, IRSA, ingress, HPA/PDB) and nothing else |
-| `run-demo.sh` | Data stores → secret → OPA → build/load/install every service |
+| `run-demo.sh` | base chart → ingress → data stores → secret → OPA → build/load/install every service |
+
+`../scripts/vendor-base-chart.sh` packages `../helm/base-service` into every
+service's gitignored `helm/charts/`. Helm resolves dependencies at *package*
+time, not install time, so this must run after any edit to the base chart —
+`run-demo.sh` does it for you.
 
 ## MongoDB
 

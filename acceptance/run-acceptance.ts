@@ -17,6 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { composeUp, composeContainerId } from './src/lib/compose';
+import { sh } from './src/lib/sh';
 import { waitForAllServicesHealthy } from '../integration-tests/src/support/http';
 import { pollUntil } from '../integration-tests/src/support/poll';
 import { closeMongo } from '../integration-tests/src/support/mongo';
@@ -49,9 +50,27 @@ async function waitForNotificationServiceHealthy(): Promise<void> {
   );
 }
 
+// Criterion 5 renders every service chart with `helm template`, which does
+// NOT resolve dependencies — it reads whatever is in <chart>/charts/. That
+// directory is gitignored (the packaged base-service is a build artifact
+// pulled from ghcr.io in CI), so package the sibling checkout into it first.
+// Skipping this makes criterion 5 fail with "found in Chart.yaml, but missing
+// in charts/ directory" — a tooling failure that reads like a policy failure.
+async function vendorBaseChart(): Promise<void> {
+  const script = path.resolve(__dirname, '..', 'scripts', 'vendor-base-chart.sh');
+  const res = await sh('bash', [script], { timeoutMs: 120_000 });
+  if (res.code !== 0) {
+    console.error('!!! vendor-base-chart.sh failed — criterion 5 will not be able to render charts.');
+    console.error(res.stdout + '\n' + res.stderr);
+  }
+}
+
 async function main(): Promise<void> {
   const startedAt = new Date();
   console.log(`\n=== Acceptance run "${RUN_LABEL}" starting ${startedAt.toISOString()} ===\n`);
+
+  console.log('--- Packaging base-service into every chart\'s charts/ ---');
+  await vendorBaseChart();
 
   console.log('--- Bringing up compose stack (base + test + acceptance + observability profile) ---');
   const composeResult = await composeUp();

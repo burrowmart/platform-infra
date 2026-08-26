@@ -37,6 +37,13 @@ ALL_SERVICES=(
 SERVICES=("$@")
 [ ${#SERVICES[@]} -eq 0 ] && SERVICES=("${ALL_SERVICES[@]}")
 
+echo "=== base-service chart ===================================="
+# helm/charts/ is gitignored: the packaged base-service is a build artifact.
+# CI pulls it from ghcr.io; locally it is packaged straight from the sibling
+# platform-infra checkout, so an edit to the base chart takes effect at once.
+"$ROOT/platform-infra/scripts/vendor-base-chart.sh"
+echo
+
 echo "=== ingress-nginx ========================================="
 # Owns the nginx-internal IngressClass that every service chart targets.
 # Must exist before any service: without it the Ingress objects are created

@@ -22,7 +22,7 @@
 
 ## 0. Prerequisites
 
-Accounts: AWS, Cloudflare (with your domain added, e.g. `demo.archtenet.dev` zone), MongoDB Atlas, GitHub org (`archtenet-labs`) with all repos pushed.
+Accounts: AWS, Cloudflare (with your domain added, e.g. `demo.archtenet.dev` zone), MongoDB Atlas, GitHub org (`burrowmart`) with all repos pushed.
 
 CLI tools — verify each:
 
@@ -140,8 +140,8 @@ aws_account_id         = "111122223333"
 cloudflare_account_id  = "..."
 cloudflare_zone_id     = "..."
 base_domain            = "internal.archtenet.dev"
-github_owner           = "archtenet-labs"
-opa_bundle_bucket_name = "archtenet-opa-bundles-111122223333"
+github_owner           = "burrowmart"
+opa_bundle_bucket_name = "burrowmart-opa-bundles-111122223333"
 secrets_backend        = "ssm"            # free; "secretsmanager" is ~$24/month here
 ```
 
@@ -163,7 +163,7 @@ terraform apply    # type yes
 
 ```bash
 terraform output
-# github_deploy_role_arns   = { "archtenet-labs/*" = "arn:aws:iam::...:role/github-oidc-deploy-..." }
+# github_deploy_role_arns   = { "burrowmart/*" = "arn:aws:iam::...:role/github-oidc-deploy-..." }
 # github_actions_variables  = { AWS_REGION = ..., KUBECONFIG_PARAM = ..., K3S_INSTANCE_ID = ... }
 # irsa_role_arns            = { user-service = ..., ... }
 # opa_bundle_bucket_name    = ...
