@@ -123,8 +123,8 @@ export async function checkEnvoyOpa(): Promise<CheckResult> {
     assertions.push(assert('LIVE ALLOW: admin GET /users -> allow=true (RBAC wildcard)', allowDecision.allow === true, JSON.stringify(allowDecision.raw)));
 
     // buyer role has no user:read RBAC grant, and without OPAL running
-    // data.users is empty so ownership/department/verified ABAC rules can't
-    // fire either -> deny. Real signature verification, real deny decision.
+    // data.users is empty so ownership/verified ABAC rules can't
+    // fire either (GET /users is a list — no owner in the path) -> deny. Real signature verification, real deny decision.
     const buyerToken = await mintToken('acceptance-buyer@example.com', 'buyer');
     const denyDecision = await envoyDecision(buyerToken, 'GET', '/users');
     assertions.push(assert('LIVE DENY: buyer GET /users -> allow=false (no RBAC/ABAC grant)', denyDecision.allow === false, JSON.stringify(denyDecision.raw)));
