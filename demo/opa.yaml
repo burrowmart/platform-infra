@@ -130,6 +130,11 @@ spec:
 # Same name/namespace/ports as ../opa/service.yaml, because that is the
 # address the charts already point at:
 # opaAddress = opa-pdp.opa-system.svc.cluster.local:9191
+#
+# internalTrafficPolicy: Local is carried over from the deployed Service too.
+# On a one-node kind cluster it is a no-op — caller and PDP are always on the
+# same node — but keeping it here means the two files differ only where a
+# laptop forces them to (Deployment vs DaemonSet, ConfigMap bundle vs S3).
 apiVersion: v1
 kind: Service
 metadata:
@@ -138,6 +143,7 @@ metadata:
   labels:
     app: opa-pdp
 spec:
+  internalTrafficPolicy: Local
   selector:
     app: opa-pdp
   ports:

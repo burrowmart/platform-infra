@@ -1,10 +1,22 @@
 # Matches the address every service's Envoy sidecar already points at
 # (opaAddress in platform-infra/helm/base-service/values.yaml and every
 # service's helm/values.yaml): opa-pdp.opa-system.svc.cluster.local:9191.
-# A plain ClusterIP Service load-balances across every DaemonSet pod
-# cluster-wide — fine for this deployment size; node-local-only routing
-# would need internalTrafficPolicy: Local plus a Downward-API HOST_IP dance
-# (see opa-policies/envoy/ext-authz.yaml's comment on that alternative).
+#
+# internalTrafficPolicy: Local is what makes the DaemonSet worth being a
+# DaemonSet: kube-proxy routes ext_authz to the OPA pod on the *caller's own
+# node* only, so an authorization check never crosses nodes. A plain ClusterIP
+# would load-balance across every node's pod, adding a network hop to every
+# request. The alternative — Envoy dialling $(HOST_IP):9191 directly, sketched
+# in opa-policies/envoy/ext-authz.yaml — needs a Downward-API env var the base
+# chart does not actually inject; this gets the same routing without it.
+#
+# The trade-off: no cluster-wide fallback. While a node has no ready OPA pod,
+# requests on that node resolve to zero endpoints, and Envoy's
+# failure_mode_allow: false turns that into 403 on everything there. That is
+# why daemonset.yaml rolls with maxSurge: 1 / maxUnavailable: 0 — the
+# replacement goes ready before the old pod is torn down, so a policy rollout
+# leaves no gap. An unplanned node-local OPA crash is still a local outage,
+# which is the deliberate price of node-local routing.
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,6 +25,8 @@ metadata:
   labels:
     app: opa-pdp
 spec:
+  # See the header note: node-local routing, no cross-node fallback.
+  internalTrafficPolicy: Local
   selector:
     app: opa-pdp
   ports:

@@ -10,6 +10,17 @@ metadata:
   labels:
     app: opa-pdp
 spec:
+  # The opa-pdp Service is internalTrafficPolicy: Local, so a node with no
+  # ready OPA pod has no PDP at all and Envoy denies every request there.
+  # Surging avoids that window: maxSurge starts the replacement and waits for
+  # its readinessProbe (/health?bundles=true) before the old pod is removed.
+  # maxSurge requires maxUnavailable: 0, and briefly runs two OPA pods on one
+  # node — safe here because neither container binds a hostPort.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: opa-pdp

@@ -37,12 +37,25 @@ For a laptop cluster use `../../demo/opa.yaml` instead (bundle from a
 ConfigMap, no MinIO, no OPAL client), which `../../demo/run-demo.sh` applies
 for you. Walkthrough: `../../docs/LOCAL-DEPLOYMENT.md` step 5.
 
-## Why a DaemonSet load-balanced by a plain ClusterIP Service
+## Why a DaemonSet behind a node-local ClusterIP Service
 
-Every node runs exactly one OPA (+ OPAL client) pod, and the Service
-round-robins across all of them — any Envoy sidecar on any node can reach
-any OPA replica. `opa-policies/envoy/ext-authz.yaml`'s comment mentions a
-node-local-only alternative (Downward API `HOST_IP` + `internalTrafficPolicy:
-Local`); not needed at this deployment's scale, and the extra hop through
-the Service is negligible next to the 0.5s ext_authz timeout already budgeted
-in every service's Envoy config.
+Every node runs exactly one OPA (+ OPAL client) pod, and the Service carries
+`internalTrafficPolicy: Local`, so kube-proxy sends each Envoy sidecar to the
+OPA pod on its own node — the PDP call never leaves the node. That is the
+point of running a PDP per node at all; a plain round-robin ClusterIP would
+put an inter-node hop inside every authorization check.
+
+`opa-policies/envoy/ext-authz.yaml` sketches the other way to get node-local
+routing — Envoy dialling `$(HOST_IP):9191` through a Downward-API env var,
+bypassing the Service entirely. It is not used: the base chart never injects
+`HOST_IP`, and `internalTrafficPolicy` achieves the same placement with no
+chart changes and no second address format to keep in sync.
+
+The cost is the loss of cross-node fallback. A node whose OPA pod is unready
+has no endpoint behind the Service, and `failure_mode_allow: false` makes
+that a 403 on every request on that node. Planned rollouts are covered —
+`daemonset.yaml` uses `maxSurge: 1` / `maxUnavailable: 0`, so the new pod
+passes its readiness probe before the old one goes away. An unplanned crash
+is a node-local outage until the pod restarts; that is the deliberate price
+of node-local routing, and the reason the readiness probe checks
+`/health?bundles=true` rather than bare liveness.
