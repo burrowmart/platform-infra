@@ -12,7 +12,7 @@ variable "secrets_prefix" {
 variable "secret_values" {
   description = <<-EOT
     Per-service overrides, keyed by service then by
-    mongo-uri|rabbit-url|redis-url|cognito-issuer|cognito-audience. Any key
+    mongo-uri|rabbit-url|redis-url. Any key
     left unset falls back to a "CHANGEME" placeholder so `apply` never fails
     for missing input — set real values via a gitignored *.auto.tfvars file
     or TF_VAR_secret_values, never as a literal default in this repo.

@@ -87,8 +87,6 @@ services:
   #     MONGO_URI: "mongodb://mongo:27017/users?replicaSet=rs0"
   #     REDIS_URL: "redis://redis:6379"
   #     RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672"
-  #     COGNITO_USER_POOL_ID: "us-east-1_XXXXXXXXX"   # fill before running
-  #     COGNITO_CLIENT_ID: "your-client-id"            # fill before running
   #     LOG_LEVEL: "debug"
 
 volumes:

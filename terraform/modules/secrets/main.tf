@@ -1,5 +1,5 @@
 locals {
-  keys = ["mongo-uri", "rabbit-url", "redis-url", "cognito-issuer", "cognito-audience"]
+  keys = ["mongo-uri", "rabbit-url", "redis-url"]
 
   defaults = {
     for k in local.keys : k => "CHANGEME-set-via-secret_values-var"

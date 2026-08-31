@@ -172,8 +172,6 @@ terraform output
 **Now fill the secret VALUES.** Terraform created one entry per key with a `CHANGEME` placeholder; values never live in git. With the default `secrets_backend = "ssm"` these are SSM parameters at `/svc/<service>/<key>`:
 
 ```bash
-COGNITO_ISSUER="https://cognito-idp.$AWS_REGION.amazonaws.com/<pool-id>"
-COGNITO_AUDIENCE="<app client id>"
 REDIS_URL="redis://:<pass>@redis-master.data.svc:6379"
 RABBITMQ_URL="amqp://platform:<pass>@rabbitmq.data.svc:5672"
 ATLAS_BASE="mongodb+srv://platform:<pass>@cluster0.xxxxx.mongodb.net"   # no trailing db name
@@ -183,8 +181,6 @@ for svc in user-service catalog-service order-service payment-service notificati
   put mongo-uri        "$ATLAS_BASE/$svc?retryWrites=true&w=majority"
   put redis-url        "$REDIS_URL"
   put rabbit-url       "$RABBITMQ_URL"
-  put cognito-issuer   "$COGNITO_ISSUER"
-  put cognito-audience "$COGNITO_AUDIENCE"
 done
 ```
 
@@ -360,7 +356,7 @@ cd platform-infra/terraform && make down
 [ ] 0. Local deployment done first (docs/LOCAL-DEPLOYMENT.md)
 [ ] 1. terraform/cluster applied, `make tunnel`, node Ready
 [ ] 2. Atlas M0 + in-cluster Redis/RabbitMQ, passwords saved
-[ ] 3. Cognito pool + client + test user, issuer/audience saved
+[ ] 3. Cognito pool + client + test user (edge identity — services do not consume issuer/audience)
 [ ] 4. terraform/platform applied, outputs saved, Parameter Store VALUES filled
 [ ] 5. External Secrets Operator + ClusterSecretStore Valid
 [ ] 6. OPA bundle in S3, DaemonSet Running, "bundle activated" in logs

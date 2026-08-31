@@ -201,7 +201,7 @@ variable "secrets_prefix" {
 variable "secret_values" {
   description = <<-EOT
     Per-service secret values, keyed by service then by
-    mongo-uri|rabbit-url|redis-url|cognito-issuer|cognito-audience. Populate
+    mongo-uri|rabbit-url|redis-url. Populate
     via a gitignored *.auto.tfvars file or TF_VAR_secret_values — never
     commit real values, and never add them here as literal defaults.
   EOT

@@ -48,7 +48,7 @@ flowchart TD
     ENV -->|"HTTP (on allow)"| APP
 ```
 
-Every pod has **two containers**: the NestJS app and the Envoy PEP sidecar. Envoy checks every request via `ext_authz` against the OPA PDP DaemonSet before forwarding to the app. The app also independently verifies the Cognito JWT (JWKS guard) — it never trusts injected headers blindly.
+Every pod has **two containers**: the NestJS app and the Envoy PEP sidecar. Envoy checks every request via `ext_authz` against the OPA PDP DaemonSet before forwarding to the app. The app itself does not re-verify the JWT — the PEP is the single authentication point; the in-app guard only extracts the caller's identity (decoded token payload or propagated `x-user-*` headers). ADR in ARCHITECTURE.md "Auth & Authz".
 
 ---
 
@@ -221,7 +221,7 @@ docker compose down -v
 
 ### Running a service against the stack
 
-Uncomment the `user-service` block in `docker-compose.yml` (or copy it for any other service) and fill in `COGNITO_USER_POOL_ID` / `COGNITO_CLIENT_ID`. The key env vars every service needs:
+Uncomment the `user-service` block in `docker-compose.yml` (or copy it for any other service). The key env vars every service needs:
 
 ```env
 MONGO_URI=mongodb://mongo:27017/<db-name>?replicaSet=rs0
