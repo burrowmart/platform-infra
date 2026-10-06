@@ -1,7 +1,9 @@
 # Single replica — Loki's ring uses an inmemory KV store (see
 # loki-config.yaml's common.ring), which only works with exactly one
 # instance. Scaling Loki horizontally needs a real ring backend (memberlist/
-# consul) and is out of scope for this demo.
+# consul) and is out of scope for this demo. Moving chunks to S3 removes the
+# *storage* half of that constraint (several instances can share one bucket,
+# which a PVC could never allow), not the ring half.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,15 +23,51 @@ spec:
       labels:
         app: loki
     spec:
+      serviceAccountName: loki
       containers:
         - name: loki
           image: grafana/loki:2.9.8
-          args: ["-config.file=/etc/loki/loki-config.yaml"]
+          # expand-env substitutes the LOKI_S3_* variables below into
+          # loki-config.yaml at startup — that is what keeps one config file
+          # serving both this deployment and the Compose profile.
+          args:
+            - -config.file=/etc/loki/loki-config.yaml
+            - -config.expand-env=true
           ports:
             - name: http
               containerPort: 3100
             - name: grpc
               containerPort: 9096
+          env:
+            # Local MinIO stand-in. In AWS: drop the endpoint and the two
+            # overrides (the config defaults are the AWS-correct values) and
+            # point LOKI_S3_BUCKET at terraform's loki_chunks_bucket_name.
+            - name: LOKI_S3_ENDPOINT
+              value: "minio.observability.svc.cluster.local:9000"
+            - name: LOKI_S3_BUCKET
+              value: "loki-chunks"
+            - name: LOKI_S3_REGION
+              value: "us-east-1"
+            - name: LOKI_S3_PATH_STYLE
+              value: "true"
+            - name: LOKI_S3_INSECURE
+              value: "true"
+            # Read by the AWS SDK's default credential chain, which Loki
+            # falls back to when the config carries no inline keys. Real
+            # cluster: IRSA injects a web-identity token instead and this
+            # Secret does not exist, hence optional.
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: loki-s3-credentials
+                  key: access-key-id
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: loki-s3-credentials
+                  key: secret-access-key
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /etc/loki
@@ -53,6 +91,12 @@ spec:
         - name: config
           configMap:
             name: loki-config
+        # emptyDir, not a PVC: with chunks and the index in S3, everything
+        # under /loki is a rebuildable cache plus the ingester's WAL. Losing
+        # it on a restart costs at most the last few seconds of un-flushed
+        # logs (Vector retries its sink), which is a fair trade for dropping
+        # the volume — and with it the per-GB cost, the single-AZ durability
+        # limit, and the node affinity a PVC pins onto this pod.
         - name: storage
-          persistentVolumeClaim:
-            claimName: loki-storage
+          emptyDir:
+            sizeLimit: 2Gi

@@ -30,12 +30,13 @@ base-service:
   externalSecrets:
     enabled: false
 
-  # LEFT ON. demo/opa.yaml runs a real OPA PDP on the laptop cluster, so
-  # the sidecar has something to ask and the authorization path is genuinely
+  # LEFT ON. demo/opa-stack.sh deploys the full authorization stack (MinIO +
+  # OPA DaemonSet + OPAL server + fetcher) on the laptop cluster, so the
+  # sidecar has something to ask and the authorization path is genuinely
   # exercised — real ext_authz, real JWT signature verification, real
   # allow/deny from the same opa-policies/bundle that runs in AWS.
   #
-  # Apply demo/opa.yaml BEFORE installing any service. Without a PDP,
+  # Run demo/opa-stack.sh BEFORE installing any service. Without a PDP,
   # Envoy's failure_mode_allow: false denies every request — correct
   # behaviour, but it looks exactly like a broken service.
   #

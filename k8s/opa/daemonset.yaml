@@ -117,6 +117,12 @@ spec:
               value: "http://opal-server.opa-system.svc.cluster.local:7002"
             - name: OPAL_INLINE_OPA_ENABLED
               value: "false"
+            # The opal-server is data-plane only (no policy repo configured),
+            # so without this the client polls GET /policy in a tight retry
+            # loop and gets 503 forever. Policy reaches OPA via its own S3
+            # bundle poller, never via OPAL.
+            - name: OPAL_POLICY_UPDATER_ENABLED
+              value: "false"
             - name: OPAL_POLICY_STORE_URL
               value: "http://localhost:8181"
             - name: OPAL_CLIENT_TOKEN

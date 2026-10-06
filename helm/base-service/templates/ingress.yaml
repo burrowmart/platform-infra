@@ -15,6 +15,32 @@ service's rendered Ingress is byte-for-byte unchanged.
       "nginx.ingress.kubernetes.io/proxy-connect-timeout" "30"
       "nginx.ingress.kubernetes.io/configuration-snippet" "more_set_input_headers \"x-correlation-id: $http_cf_ray\";\n"
 -}}
+{{/*
+Strip the public API version prefix before the request leaves nginx.
+
+The public surface is versioned (/api/v1/users); nothing behind the ingress
+is. NestJS controllers are mounted unprefixed (@Controller('users')) and
+opa-policies/bundle/envoy.rego's route_table is written against those same
+unprefixed paths, so an unrewritten /api/v1/users matches no route and the
+PEP sidecar denies it with 403 UAEX before the app ever sees it.
+
+The capture group starts after the prefix's trailing slash, so
+rewrite-target "/$1" yields exactly /users (and /users/<id>) — no trailing
+slash, which `^/users$` in the route_table would not match, and no doubled
+leading slash, which a capture of "/users" into "/$1" would produce.
+pathType must be ImplementationSpecific for nginx to treat the path as a
+regex. Services whose path does not carry the prefix (ws-gateway, /ws) are
+left untouched, as is the chart's own `path: /` default.
+*/}}
+{{- $path := .Values.ingress.path -}}
+{{- $pathType := .Values.ingress.pathType -}}
+{{- $prefix := .Values.ingress.stripPrefix | default "" -}}
+{{- if and $prefix (hasPrefix $prefix $path) -}}
+{{- $_ := set $defaultAnnotations "nginx.ingress.kubernetes.io/rewrite-target" "/$1" -}}
+{{- $_ := set $defaultAnnotations "nginx.ingress.kubernetes.io/use-regex" "true" -}}
+{{- $path = printf "%s/(%s.*)" $prefix (trimPrefix "/" (trimPrefix $prefix $path)) -}}
+{{- $pathType = "ImplementationSpecific" -}}
+{{- end -}}
 {{- $annotations := merge (.Values.ingress.annotations | default dict) $defaultAnnotations -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -32,8 +58,8 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: {{ .Values.ingress.path | quote }}
-            pathType: {{ .Values.ingress.pathType }}
+          - path: {{ $path | quote }}
+            pathType: {{ $pathType }}
             backend:
               service:
                 name: {{ include "base-service.fullname" . }}

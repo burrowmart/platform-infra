@@ -33,10 +33,11 @@ spec:
                   key: master-token
             # Initial full sync + periodic drift-correction poll against
             # user-service's GET /internal/attributes. See
-            # opa-policies/opal/data-config.template.json for the shape and
-            # __SERVICE_TOKEN__ is filled in by whatever deploys this — nothing
-            # scripts it yet. ../../demo/run-demo.sh is the laptop path and runs
-            # OPA without OPAL, so it never touches this.
+            # opa-policies/opal/data-config.template.json for the shape;
+            # __SERVICE_TOKEN__ is filled in by whatever deploys this —
+            # locally ../../demo/opa-stack.sh renders it into the Secret with
+            # a demo-signed JWT, in prod your pipeline does the same with a
+            # Cognito client-credentials token.
             - name: OPAL_DATA_CONFIG_SOURCES
               valueFrom:
                 secretKeyRef:

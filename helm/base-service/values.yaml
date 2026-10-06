@@ -67,20 +67,32 @@ service:
 
 # ---------------------------------------------------------------------------
 # Internal nginx Ingress
-# Cloudflare Tunnel forwards here; TLS is terminated at the Cloudflare edge,
-# so no TLS stanza is needed on this Ingress.
+# Cloudflare Tunnel forwards here in AWS; TLS is terminated at the Cloudflare
+# edge, so no TLS stanza is needed on this Ingress. Stays on locally too,
+# under the same IngressClass — see LOCAL-DEPLOYMENT.md Step 6 and
+# demo/ingress-nginx-values.yaml, which install a controller that owns
+# nginx-internal so the rendered Ingress is byte-for-byte what AWS gets.
+# What's missing locally is the Cloudflare Tunnel: reach the controller
+# directly via the node's hostPort (kind maps it to host 8081) with a Host
+# header instead.
 # ---------------------------------------------------------------------------
 ingress:
-  # Off locally: a laptop cluster has no Cloudflare Tunnel and no
-  # nginx-internal IngressClass. Use `kubectl port-forward` there instead.
   enabled: true
   host: example-service.internal.example.com
-  # IngressClass to bind to. nginx-internal is the cluster-internal class the
-  # Cloudflare Tunnel forwards into; a local kind cluster running stock
-  # ingress-nginx would use "nginx".
+  # IngressClass to bind to. nginx-internal is the same class locally and in
+  # AWS — see demo/ingress-nginx-values.yaml and
+  # terraform/modules/internal-ingress.
   className: nginx-internal
   path: /
   pathType: Prefix
+  # Public API version prefix, stripped by nginx before the request reaches
+  # the pod. Services are mounted unprefixed behind the ingress — NestJS
+  # controllers and opa-policies' route_table both speak /users, not
+  # /api/v1/users — so `path: /api/v1/users` here is rewritten to /users on
+  # the way through. Set to "" to forward the path verbatim; paths that do
+  # not start with this prefix (ws-gateway's /ws) are forwarded verbatim
+  # anyway.
+  stripPrefix: /api/v1
   # Merged over the chart's hardcoded defaults (proxy-read-timeout etc.) — a
   # key set here wins. Empty by default; ws-gateway uses this to raise
   # proxy-read/send-timeout and disable buffering for WebSocket connections.

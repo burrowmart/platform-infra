@@ -60,3 +60,13 @@ output "opa_bundle_reader_role_arn" {
   description = "Set as irsaRoleArn on the OPA PDP DaemonSet's ServiceAccount."
   value       = module.opa_bundle_bucket.reader_role_arn
 }
+
+output "loki_chunks_bucket_name" {
+  description = "Set as LOKI_S3_BUCKET in k8s/observability/loki/deployment.yaml."
+  value       = module.loki_chunks_bucket.bucket_name
+}
+
+output "loki_chunks_role_arn" {
+  description = "Set as the eks.amazonaws.com/role-arn annotation on k8s/observability/loki/serviceaccount.yaml."
+  value       = module.loki_chunks_bucket.role_arn
+}

@@ -236,3 +236,24 @@ variable "opa_service_account" {
   type        = string
   default     = "opa-pdp"
 }
+
+# ---------------------------------------------------------------------------
+# Loki chunk bucket
+# ---------------------------------------------------------------------------
+
+variable "loki_chunks_bucket_name" {
+  description = "Globally-unique S3 bucket name for Loki's log chunks."
+  type        = string
+}
+
+variable "observability_namespace" {
+  description = "Namespace the observability stack runs in."
+  type        = string
+  default     = "observability"
+}
+
+variable "loki_service_account" {
+  description = "ServiceAccount name Loki runs as (IRSA-annotated)."
+  type        = string
+  default     = "loki"
+}

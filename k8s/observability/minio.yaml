@@ -1,0 +1,135 @@
+# DEMO-ONLY local stand-in for the S3 bucket that
+# ../../terraform/modules/loki-chunks-bucket provisions in AWS. Real S3 needs
+# no in-cluster resource — Loki talks to it over the internet with IRSA
+# credentials. This exists so a kind cluster exercises the exact same S3 code
+# path (loki-config.yaml's common.storage.s3) instead of a filesystem backend
+# that only ever runs locally.
+#
+# Deliberately a SECOND MinIO, separate from ../opa/minio.yaml: the two
+# stacks deploy independently (opa-stack.sh vs this directory's README), and
+# making observability wait on the OPA namespace to have somewhere to put its
+# logs would be a coupling that exists in no other environment. In AWS this
+# duplication disappears — there is one S3 service and two buckets.
+#
+# Root credentials below are MinIO's own well-known quickstart defaults, not
+# a secret worth protecting: this pod only ever exists inside an ephemeral
+# local kind cluster. Loki reads the same Secret as AWS_ACCESS_KEY_ID /
+# AWS_SECRET_ACCESS_KEY (see loki/deployment.yaml).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: loki-s3-credentials
+  namespace: observability
+type: Opaque
+stringData:
+  access-key-id: minioadmin
+  secret-access-key: minioadmin
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: observability
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          args: ["server", "/data"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: loki-s3-credentials
+                  key: access-key-id
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: loki-s3-credentials
+                  key: secret-access-key
+          ports:
+            - containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        # Same reasoning as Loki's own storage: this is a demo stand-in, and
+        # a kind cluster's logs are not worth a PersistentVolume.
+        - name: data
+          emptyDir:
+            sizeLimit: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: observability
+spec:
+  selector:
+    app: minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+---
+# MinIO does not create buckets on its own, and Loki does not create its own
+# bucket either — it expects one to exist and fails its readiness probe
+# otherwise. `mc mb -p` is idempotent, so re-running this Job is harmless.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-create-loki-bucket
+  namespace: observability
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: minio-create-loki-bucket
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: minio/minio:latest
+          command:
+            - sh
+            - -c
+            # No readiness gate needed: a failed attempt exits non-zero and
+            # the Job's restartPolicy retries until MinIO answers.
+            - |
+              mc alias set local http://minio.observability.svc.cluster.local:9000 \
+                "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" &&
+              mc mb -p local/loki-chunks
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: loki-s3-credentials
+                  key: access-key-id
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: loki-s3-credentials
+                  key: secret-access-key

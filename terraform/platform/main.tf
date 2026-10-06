@@ -90,3 +90,22 @@ module "opa_bundle_bucket" {
 
   tags = var.tags
 }
+
+# ---------------------------------------------------------------------------
+# Observability storage — Loki's chunks live in S3, not on a volume, so the
+# log store survives the node and costs only what it actually holds. See the
+# module header for why this bucket is versioned differently from the OPA one.
+# ---------------------------------------------------------------------------
+
+module "loki_chunks_bucket" {
+  source = "../modules/loki-chunks-bucket"
+
+  bucket_name = var.loki_chunks_bucket_name
+
+  cluster_oidc_provider_arn = local.cluster_oidc_provider_arn
+  cluster_oidc_provider_url = local.cluster_oidc_provider_url
+  loki_namespace            = var.observability_namespace
+  loki_service_account      = var.loki_service_account
+
+  tags = var.tags
+}

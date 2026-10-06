@@ -13,7 +13,7 @@ infrastructure shared cluster-wide, not a per-service release like
 | `configmap.yaml.template` | OPA `config.yaml` — S3 bundle polling + the `envoy_ext_authz_grpc` plugin. `${OPA_BUNDLE_S3_URL}` is `envsubst`'d in by whatever deploys this (the demo script, or your real pipeline) |
 | `daemonset.yaml` | `opa` + `opal-client` containers, one pod per node |
 | `service.yaml` | ClusterIP `opa-pdp:9191` — what every service's Envoy sidecar calls |
-| `minio.yaml` | **Unused by the current local path.** A local S3 stand-in, so `kind` could exercise the real `services.s3` / SigV4-signing code path. `../../demo/opa.yaml` mounts the 4 KB bundle from a ConfigMap instead, which drops MinIO, its credentials Secret and the bucket-seeding step. Keep this only if you specifically want to exercise the S3 polling path locally. Not part of the production path — real S3 needs no in-cluster resource. |
+| `minio.yaml` | A local S3 stand-in, so `kind` exercises the real `services.s3` / SigV4-signing code path — `../../demo/opa-stack.sh` deploys it, seeds the `opa-bundles` bucket, and uploads the built bundle. Not part of the production path — real S3 needs no in-cluster resource. |
 
 ## Apply order
 
@@ -29,13 +29,14 @@ kubectl apply -f service.yaml
 kubectl apply -f daemonset.yaml
 ```
 
-The apply order above is the **deployed** (S3 + OPAL) path. Nothing scripts it
-yet — `OPA_BUNDLE_S3_URL` comes from terraform's `opa_bundle_bucket_name`
-output, and the OPAL secrets from `../opal/`.
-
-For a laptop cluster use `../../demo/opa.yaml` instead (bundle from a
-ConfigMap, no MinIO, no OPAL client), which `../../demo/run-demo.sh` applies
-for you. Walkthrough: `../../docs/LOCAL-DEPLOYMENT.md` step 5.
+The apply order above is the same for both environments; what differs is who
+runs it and where the values come from. Locally `../../demo/opa-stack.sh`
+scripts the whole thing (MinIO as the bucket, quickstart credentials in the
+Secret, `OPA_BUNDLE_S3_URL` pointing at `minio.opa-system:9000`). In AWS your
+deploy pipeline does the substitution — `OPA_BUNDLE_S3_URL` from terraform's
+`opa_bundle_bucket_name` output, credentials via IRSA (no Secret at all), and
+the OPAL secrets from `../opal/`. Walkthrough:
+`../../docs/LOCAL-DEPLOYMENT.md` step 5.
 
 ## Why a DaemonSet behind a node-local ClusterIP Service
 

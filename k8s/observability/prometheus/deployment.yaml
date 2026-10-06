@@ -53,9 +53,9 @@ spec:
           configMap:
             name: prometheus-config
         # emptyDir, not a PVC: 7-day retention on demo-scale traffic fits
-        # comfortably in ephemeral node storage, and it avoids a second PVC
-        # (beyond Loki's and Tempo's) for what is explicitly a demo cluster.
-        # Swap for a PersistentVolumeClaim (mirrors ../loki/pvc.yaml) if this
+        # comfortably in ephemeral node storage, and it avoids a PVC (Tempo's
+        # is now the only one left) for what is explicitly a demo cluster.
+        # Swap for a PersistentVolumeClaim (mirrors ../tempo/pvc.yaml) if this
         # Prometheus needs to survive a pod reschedule.
         - name: storage
           emptyDir: {}

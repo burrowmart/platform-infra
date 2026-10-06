@@ -41,13 +41,59 @@ field inside the stored log line, queried with `| json | correlationId=".."`
 is mirrored in Prometheus's relabeling (`prometheus/prometheus.yml`) so a
 dashboard variable can drive both a metrics panel and a logs panel.
 
+## Where the logs live (and for how long)
+
+Loki writes its chunks and TSDB index to **object storage**, not a volume:
+MinIO locally (`minio.yaml`), a real bucket in AWS
+(`../../terraform/modules/loki-chunks-bucket`). The pod's own disk is an
+`emptyDir` holding only the WAL and index caches, all of it rebuildable from
+the bucket — so there is no PersistentVolume, and with it none of a PVC's
+per-GB cost, single-AZ durability limit, or node affinity. Losing that
+`emptyDir` on a restart costs at most the last few seconds of un-flushed
+logs, which Vector's sink retries anyway.
+
+One config file serves both environments. Everything environment-specific
+(`LOKI_S3_ENDPOINT`, `_BUCKET`, `_REGION`, `_PATH_STYLE`, `_INSECURE`) arrives
+as an environment variable and is expanded at startup by
+`-config.expand-env=true`. The defaults baked into `loki-config.yaml` are the
+AWS-correct ones, so the cloud path sets only the bucket and region while
+the local path opts into path-style addressing and plain HTTP. Credentials
+follow the same pattern as the OPA DaemonSet: no keys in the config at all,
+so Loki falls back to the AWS SDK's credential chain — MinIO's static
+credentials from a Secret locally, an IRSA web-identity token in AWS.
+
+**Retention is the actual cost lever**, larger than the choice of backend.
+`limits_config.retention_period` (14 days) is the single knob; the compactor's
+`retention_enabled: true` is what makes it do anything. Without it Loki keeps
+every line forever — as a full disk and a crash-looping ingester on a volume,
+or as a quietly growing bill on S3. The bucket's own lifecycle rule is a
+**backstop, not the mechanism**: it expires objects at 30 days to catch what
+a disabled or broken compactor left behind, and it must stay comfortably
+longer than Loki's retention, or S3 would delete chunks the index still
+points at.
+
+### Switching this to a real bucket
+
+1. `terraform apply` in `../../terraform/platform`, then take the
+   `loki_chunks_bucket_name` and `loki_chunks_role_arn` outputs.
+2. Put the role ARN in `loki/serviceaccount.yaml`'s
+   `eks.amazonaws.com/role-arn` annotation.
+3. In `loki/deployment.yaml`: set `LOKI_S3_BUCKET` to the bucket name, set
+   `LOKI_S3_REGION` to your region, and delete `LOKI_S3_ENDPOINT`,
+   `LOKI_S3_PATH_STYLE`, `LOKI_S3_INSECURE` — the config defaults are already
+   what real S3 wants.
+4. Don't apply `minio.yaml`. The `loki-s3-credentials` Secret it carries is
+   then absent, which is why both env vars that read it are marked
+   `optional: true` — IRSA supplies credentials instead.
+
 ## Layout
 
 | Path | What |
 |---|---|
 | `namespace.yaml` | `observability` |
 | `vector/` | DaemonSet, RBAC, `vector.yaml` (kubernetes_logs → Loki) |
-| `loki/` | Deployment, Service, PVC, `loki-config.yaml` (filesystem, single binary) |
+| `minio.yaml` | Local S3 stand-in for Loki's chunk bucket — Secret, Deployment, Service, and the Job that creates the bucket. Demo-only; in AWS this is `../../terraform/modules/loki-chunks-bucket` |
+| `loki/` | Deployment, Service, ServiceAccount (IRSA), `loki-config.yaml` (S3-backed, single binary). No PVC — see "Where the logs live" |
 | `tempo/` | Deployment, Service, PVC, `tempo.yaml` (OTLP receiver, local storage) |
 | `otel-collector/` | Deployment, Service, `config.yaml` (OTLP in → OTLP out to Tempo) |
 | `prometheus/` | Deployment, Service, RBAC, `prometheus.yml` (annotation-based pod discovery) |
@@ -78,8 +124,11 @@ kubectl create configmap vector-config -n observability \
   --from-file=vector.yaml=./vector/vector.yaml --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f vector/daemonset.yaml
 
+# --- MinIO (Loki's S3 stand-in; skip in AWS, where the bucket is real) ---
+kubectl apply -f minio.yaml
+
 # --- Loki ---
-kubectl apply -f loki/pvc.yaml
+kubectl apply -f loki/serviceaccount.yaml
 kubectl create configmap loki-config -n observability \
   --from-file=loki-config.yaml=./loki/loki-config.yaml --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -f loki/deployment.yaml -f loki/service.yaml

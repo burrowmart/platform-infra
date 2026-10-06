@@ -6,11 +6,9 @@
 #   ./platform-infra/demo/run-demo.sh                     # all services
 #   ./platform-infra/demo/run-demo.sh user-service order-service
 #
-# Covers: ingress-nginx, data stores, the platform Secret, the OPA PDP, and
-# every service.
-# Does NOT cover OPAL (no server locally — policy here is static) or the MinIO
-# S3 stand-in (the bundle is mounted from a ConfigMap instead). Those belong to
-# the deployed path in ../k8s/opal/ and ../k8s/opa/.
+# Covers: ingress-nginx, data stores, the platform Secret, the full OPA/OPAL
+# stack (MinIO + OPA DaemonSet + OPAL server + fetcher, via ./opa-stack.sh),
+# and every service.
 #
 # Do the first service by hand before reaching for this — see
 # docs/LOCAL-DEPLOYMENT.md. This script is for the repetitive part, not for
@@ -62,19 +60,16 @@ kubectl apply -f "$ROOT/platform-infra/demo/data-namespace.yaml"
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 kubectl apply -n "$NAMESPACE" -f "$ROOT/platform-infra/demo/platform-secret.yaml"
 
-# --- OPA PDP ---------------------------------------------------------------
-# The Envoy PEP sidecar in every pod calls this. It must exist before any
-# service starts, or Envoy denies everything (failure_mode_allow: false).
-# The bundle is built here rather than committed, so a policy edit is picked
-# up by re-running this script.
-echo "=== OPA: build bundle + apply PDP =============================="
-( cd "$ROOT/opa-policies" && make build )
-kubectl apply -f "$ROOT/platform-infra/demo/opa.yaml"
-kubectl create configmap opa-bundle -n opa-system \
-  --from-file=bundle.tar.gz="$ROOT/opa-policies/dist/bundle.tar.gz" \
-  --dry-run=client -o yaml | kubectl apply -f -
-kubectl rollout restart deployment/opa-pdp -n opa-system 2>/dev/null || true
-kubectl rollout status deployment/opa-pdp -n opa-system --timeout=120s
+# --- OPA/OPAL stack --------------------------------------------------------
+# The Envoy PEP sidecar in every pod calls the OPA PDP. It must exist before
+# any service starts, or Envoy denies everything (failure_mode_allow: false).
+# opa-stack.sh deploys the full stack — MinIO (S3 stand-in), the OPA
+# DaemonSet with its opal-client sidecar, the OPAL server, and the
+# RabbitMQ->OPAL fetcher — and uploads a freshly built bundle to MinIO, so a
+# policy edit is picked up by re-running this script (OPA re-polls within 10s).
+# Needs the data stores above: the fetcher consumes RabbitMQ.
+echo "=== OPA/OPAL stack ============================================="
+CLUSTER="$CLUSTER" NAMESPACE="$NAMESPACE" "$ROOT/platform-infra/demo/opa-stack.sh"
 echo
 
 # ---------------------------------------------------------------------------

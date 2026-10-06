@@ -40,6 +40,7 @@ Grep-provable — see [Verification](#verification) below.
 | [`../modules/irsa`](../modules/irsa) | Reusable: one IAM role per service, trust-scoped to that service's `namespace`/`ServiceAccount` via the cluster's OIDC provider, with a read policy scoped to `{prefix}/{service}/*` in whichever backend `secrets_backend` selects | Secrets & CI auth |
 | [`../modules/secrets`](../modules/secrets) | Per-service entries — `mongo-uri`, `rabbit-url`, `redis-url`, `cognito-issuer`, `cognito-audience` — in SSM Parameter Store (default, free) or Secrets Manager; values sourced from a sensitive variable, never a literal in `.tf` source | Secrets & CI auth |
 | [`../modules/opa-bundle-bucket`](../modules/opa-bundle-bucket) | Versioned, private S3 bucket for OPA bundles; a write-only role for the `opa-policies` repo's CI (GitHub OIDC); a read-only role for the OPA PDP DaemonSet (IRSA) | Auth & Authz (OPA bundle source) |
+| [`../modules/loki-chunks-bucket`](../modules/loki-chunks-bucket) | Private S3 bucket for Loki's log chunks — deliberately unversioned, with a lifecycle backstop behind Loki's own retention; one read/write/delete IRSA role for Loki's ServiceAccount | Observability (log storage) |
 
 The cluster's IAM OIDC identity provider — the prerequisite for IRSA — is
 created in [`../cluster/oidc.tf`](../cluster/oidc.tf), because on k3s it has

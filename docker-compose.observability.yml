@@ -77,16 +77,70 @@ services:
       - loki
     restart: unless-stopped
 
+  # ── MinIO — the S3 stand-in Loki writes its chunks to ────────────────────
+  # Mirrors k8s/observability/minio.yaml. Same reason it exists there: the
+  # point of a local stack is to run the same S3 code path as AWS, not a
+  # filesystem backend that exists nowhere else. Quickstart credentials.
+  minio:
+    image: minio/minio:latest
+    profiles: ["observability"]
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Neither MinIO nor Loki creates the bucket; Loki just fails readiness
+  # without it. `mc mb -p` is idempotent, so this re-runs harmlessly.
+  minio-init:
+    image: minio/minio:latest
+    profiles: ["observability"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - mc alias set local http://minio:9000 minioadmin minioadmin && mc mb -p local/loki-chunks
+    restart: "no"
+
   # ── Loki ─────────────────────────────────────────────────────────────────
   loki:
     image: grafana/loki:2.9.8
     profiles: ["observability"]
-    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    # -config.expand-env expands the LOKI_S3_*/AWS_* variables below into the
+    # shared config file — the same mechanism the k8s deployment uses, which
+    # is what lets both environments mount this one file unmodified.
+    command:
+      - -config.file=/etc/loki/loki-config.yaml
+      - -config.expand-env=true
+    environment:
+      LOKI_S3_ENDPOINT: "minio:9000"
+      LOKI_S3_BUCKET: "loki-chunks"
+      LOKI_S3_REGION: "us-east-1"
+      LOKI_S3_PATH_STYLE: "true"
+      LOKI_S3_INSECURE: "true"
+      # Picked up by the AWS SDK's default credential chain, which Loki falls
+      # back to because the config carries no inline keys.
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin"
     ports:
       - "3100:3100"
     volumes:
       - ./k8s/observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      # Only the WAL and index caches now that chunks live in MinIO — the
+      # k8s deployment uses an emptyDir for exactly this reason.
       - loki-data:/loki
+    depends_on:
+      minio:
+        condition: service_healthy
     restart: unless-stopped
 
   # ── Tempo ────────────────────────────────────────────────────────────────
@@ -170,6 +224,7 @@ services:
 
 volumes:
   loki-data:
+  minio-data:
   tempo-data:
   prometheus-data:
   grafana-data:

@@ -1,9 +1,14 @@
-# Single-binary Loki, filesystem-backed — fine at this demo's scale (a
-# handful of services, a saga integration suite as the traffic generator).
-# Environment-agnostic on purpose: this exact file is mounted unmodified by
-# both the k8s ConfigMap (see ../README.md) and the Compose observability
-# profile (../../../docker-compose.observability.yml) — Loki's config has no
-# hostnames or replica topology to differ between the two.
+# Single-binary Loki, S3-backed. Chunks and the TSDB index live in object
+# storage; the container's own disk holds only the WAL and index caches, so
+# no PersistentVolume is involved (see deployment.yaml's emptyDir).
+#
+# Still environment-agnostic on purpose: this exact file is mounted unmodified
+# by both the k8s ConfigMap (see ../README.md) and the Compose observability
+# profile (../../../docker-compose.observability.yml). Everything that differs
+# between environments arrives as an environment variable, expanded at startup
+# by `-config.expand-env=true` (set in both deployment.yaml and the Compose
+# service). Locally those point at MinIO, in AWS at the real bucket from
+# terraform's modules/loki-chunks-bucket.
 auth_enabled: false
 
 server:
@@ -13,19 +18,36 @@ server:
 common:
   path_prefix: /loki
   storage:
-    filesystem:
-      chunks_directory: /loki/chunks
-      rules_directory: /loki/rules
+    s3:
+      # Empty = the region's real AWS endpoint. MinIO sets an explicit one.
+      endpoint: ${LOKI_S3_ENDPOINT:-}
+      bucketnames: ${LOKI_S3_BUCKET}
+      region: ${LOKI_S3_REGION}
+      # Path-style puts the bucket in the URL path rather than the hostname —
+      # what MinIO serves, and what real S3 has deprecated. Defaults here are
+      # the AWS-correct ones so the cloud path sets neither.
+      s3forcepathstyle: ${LOKI_S3_PATH_STYLE:-false}
+      # Plain http. Only ever true for the in-cluster MinIO stand-in.
+      insecure: ${LOKI_S3_INSECURE:-false}
+      # No access_key_id/secret_access_key on purpose: leaving them unset
+      # makes Loki fall back to the AWS SDK's default credential chain —
+      # AWS_ACCESS_KEY_ID/_SECRET_ACCESS_KEY env vars locally (MinIO's), the
+      # IRSA web-identity token in AWS. Same trick as ../../opa/daemonset.yaml.
   replication_factor: 1
   ring:
     kvstore:
       store: inmemory
 
 schema_config:
+  # object_store was flipped from filesystem to s3 in place, which is the
+  # demo-scale shortcut: anything already written to the old PVC becomes
+  # unreadable. A real migration adds a SECOND entry with a future `from`
+  # date and keeps both stores configured, so Loki reads old chunks from the
+  # old backend and writes new ones to S3.
   configs:
     - from: 2024-01-01
       store: tsdb
-      object_store: filesystem
+      object_store: s3
       schema: v13
       index:
         prefix: index_
@@ -42,6 +64,21 @@ limits_config:
   per_stream_rate_limit: 8MB
   per_stream_rate_limit_burst: 16MB
 
+  # How long logs are queryable, and the single biggest lever on storage
+  # cost — bigger than the choice of backend. Without it Loki keeps every
+  # line forever: on a PVC that ends as a full disk and a crash-looping
+  # ingester, on S3 as a bill that grows quietly until somebody notices.
+  # Enforced by the compactor below; `retention_enabled: true` there is what
+  # actually makes this value do anything.
+  retention_period: 336h # 14 days
+
 compactor:
   working_directory: /loki/compactor
-  delete_request_store: filesystem
+  # Must name the same backend as schema_config above, or delete requests are
+  # written where the compactor will not look for them.
+  delete_request_store: s3
+  retention_enabled: true
+  compaction_interval: 10m
+  # Grace period between a chunk falling out of retention and its deletion —
+  # long enough that an in-flight query holding a reference still completes.
+  retention_delete_delay: 2h
